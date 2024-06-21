@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -28,12 +28,15 @@ from tensor2tensor.layers import common_layers
 from tensor2tensor.layers import common_video
 from tensor2tensor.models.video import savp_params  # pylint: disable=unused-import
 from tensor2tensor.models.video import sv2p
+from tensor2tensor.utils import contrib
 from tensor2tensor.utils import registry
 from tensor2tensor.utils import update_ops_hook
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
+import tensorflow_gan as tfgan
 
-gan_losses = tf.contrib.gan.losses.wargs
+gan_losses = tfgan.losses.wargs
 
 
 class NextFrameSavpBase(object):
@@ -81,7 +84,7 @@ class NextFrameSavpBase(object):
           padded = tf.pad(inputs, padding)
         convolved = tf.layers.conv2d(padded, filters=n_filters, kernel_size=4,
                                      strides=2, padding="VALID")
-        normalized = tf.contrib.layers.instance_norm(convolved)
+        normalized = contrib.layers().instance_norm(convolved)
         rectified = tf.nn.leaky_relu(normalized, alpha=0.2)
 
     # Mean pooling across all spatial dimensions.
@@ -396,7 +399,7 @@ class NextFrameSAVP(NextFrameSavpBase, sv2p.NextFrameSv2pLegacy):
       [], [], [], [], []
     pred_image = tf.zeros_like(images[0])
     prior_latent_state, cond_latent_state = None, None
-    train_mode = self.hparams.mode == tf.estimator.ModeKeys.TRAIN
+    train_mode = self.hparams.mode == tf_estimator.ModeKeys.TRAIN
 
     # Create scheduled sampling function
     ss_func = self.get_scheduled_sample_func(batch_size)

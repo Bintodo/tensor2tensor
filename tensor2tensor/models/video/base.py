@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,11 +30,11 @@ from tensor2tensor.layers import modalities
 from tensor2tensor.utils import registry
 from tensor2tensor.utils import t2t_model
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 
 def flat_lists(list_of_lists):
-  return [x for l in list_of_lists for x in l]
+  return [x for l in list_of_lists for x in l]  # pylint: disable=g-complex-comprehension
 
 
 def pixels_from_softmax(frame_logits, pure_sampling=False,
@@ -381,6 +381,7 @@ class NextFrameBase(t2t_model.T2TModel):
     # TODO(lukaszkaiser): the logic below heavily depend on the current
     # (a bit strange) video modalities - we should change that.
 
+    sampled_frame = pred_frame
     if self.is_per_pixel_softmax:
       frame_shape = common_layers.shape_list(pred_frame)
       target_shape = frame_shape[:-1] + [self.hparams.problem.num_channels]
@@ -388,13 +389,8 @@ class NextFrameBase(t2t_model.T2TModel):
       sampled_frame = pixels_from_softmax(
           sampled_frame, temperature=self.hparams.pixel_sampling_temperature)
       # TODO(lukaszkaiser): this should be consistent with modality.bottom()
-      sampled_frame = common_layers.standardize_images(sampled_frame)
-    else:
-      x = common_layers.convert_real_to_rgb(pred_frame)
-      x = x - tf.stop_gradient(x + tf.round(x))
-      x = common_layers.convert_rgb_to_real(x)
-      return x
-    return sampled_frame
+      # sampled_frame = common_layers.standardize_images(sampled_frame)
+    return tf.to_float(sampled_frame)
 
   def __get_next_inputs(self, index, all_frames, all_actions, all_rewards):
     """Get inputs for next prediction iteration.
@@ -540,9 +536,10 @@ class NextFrameBase(t2t_model.T2TModel):
         target_frames.append(tf.identity(target_frame))
 
         with tf.variable_scope(tf.get_variable_scope(), reuse=tf.AUTO_REUSE):
-          func_in = (frames, actions, rewards, target_frame,
-                     internal_states, video_features)
-          func_out = self.next_frame(*func_in)
+          float_frames = [tf.to_float(frame) for frame in frames]
+          func_out = self.next_frame(
+              float_frames, actions, rewards, tf.to_float(target_frame),
+              internal_states, video_features)
           res_frame, res_reward, res_policy, res_value, res_extra_loss, \
               internal_states = func_out
           res_frames.append(res_frame)
@@ -579,7 +576,7 @@ class NextFrameBase(t2t_model.T2TModel):
 
         # Scheduled sampling during training.
         if self.is_training:
-          groundtruth_items = [target_frame]
+          groundtruth_items = [tf.to_float(target_frame)]
           generated_items = [sampled_frame]
           ss_frame, = self.get_scheduled_sample_inputs(
               done_warm_start, groundtruth_items, generated_items, ss_func)
@@ -608,7 +605,8 @@ class NextFrameBase(t2t_model.T2TModel):
       sampled_frames = sampled_frames[hparams.video_num_input_frames-1:]
       target_frames = target_frames[hparams.video_num_input_frames-1:]
 
-    self.visualize_predictions(sampled_frames, target_frames)
+    self.visualize_predictions(
+        sampled_frames, [tf.to_float(f) for f in target_frames])
 
     output_frames = tf.stack(res_frames, axis=1)
     targets = output_frames

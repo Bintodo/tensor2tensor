@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,9 +19,9 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+from tensor2tensor.utils import hparam
 from tensor2tensor.utils import misc_utils
-from tensor2tensor.utils.hparam import HParams
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 
 class MiscUtilsTest(tf.test.TestCase):
@@ -57,7 +57,7 @@ class MiscUtilsTest(tf.test.TestCase):
                      misc_utils.snakecase_to_camelcase("lstm_seq2_seq"))
 
   def test_pprint_hparams(self):
-    hparams = HParams(
+    hparams = hparam.HParams(
         int_=1, str_="str", bool_=True, float_=1.1, list_int=[1, 2], none=None)
 
     # pylint: disable=g-inconsistent-quotes

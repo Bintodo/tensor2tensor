@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,7 +26,8 @@ from tensor2tensor.data_generators import problem_hparams
 from tensor2tensor.layers import common_image_attention
 from tensor2tensor.models import image_transformer
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
 
 
 class ImagetransformerTest(parameterized.TestCase, tf.test.TestCase):
@@ -56,7 +57,7 @@ class ImagetransformerTest(parameterized.TestCase, tf.test.TestCase):
           "targets": tf.constant(targets, dtype=tf.int32),
           "target_space_id": tf.constant(1, dtype=tf.int32),
       }
-      model = net(hparams, tf.estimator.ModeKeys.TRAIN, p_hparams)
+      model = net(hparams, tf_estimator.ModeKeys.TRAIN, p_hparams)
       logits, _ = model(features)
       session.run(tf.global_variables_initializer())
       res = session.run(logits)

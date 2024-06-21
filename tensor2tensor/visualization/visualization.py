@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,7 +26,8 @@ from tensor2tensor import problems
 from tensor2tensor.utils import registry
 from tensor2tensor.utils import trainer_lib
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
 
 EOS_ID = 1
 
@@ -58,12 +59,17 @@ class AttentionVisualizer(object):
   def decode(self, integers):
     """List of ints to str."""
     integers = list(np.squeeze(integers))
-    return self.encoders["inputs"].decode(integers)
+    return self.encoders["targets"].decode(integers)
+
+  def encode_list(self, integers):
+    """List of ints to list of str."""
+    integers = list(np.squeeze(integers))
+    return self.encoders["inputs"].decode_list(integers)
 
   def decode_list(self, integers):
     """List of ints to list of str."""
     integers = list(np.squeeze(integers))
-    return self.encoders["inputs"].decode_list(integers)
+    return self.encoders["targets"].decode_list(integers)
 
   def get_vis_data_from_string(self, sess, input_string):
     """Constructs the data needed for visualizing attentions.
@@ -104,7 +110,7 @@ class AttentionVisualizer(object):
     })
 
     output_string = self.decode(out)
-    input_list = self.decode_list(encoded_inputs)
+    input_list = self.encode_list(encoded_inputs)
     output_list = self.decode_list(out)
 
     return output_string, input_list, output_list, att_mats
@@ -133,7 +139,7 @@ def build_model(hparams_set, model_name, data_dir, problem_name, beam_size=1):
   hparams = trainer_lib.create_hparams(
       hparams_set, data_dir=data_dir, problem_name=problem_name)
   translate_model = registry.model(model_name)(
-      hparams, tf.estimator.ModeKeys.EVAL)
+      hparams, tf_estimator.ModeKeys.EVAL)
 
   inputs = tf.placeholder(tf.int32, shape=(1, None, 1, 1), name="inputs")
   targets = tf.placeholder(tf.int32, shape=(1, None, 1, 1), name="targets")

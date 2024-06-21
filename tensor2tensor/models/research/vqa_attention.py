@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -27,7 +27,9 @@ from tensor2tensor.utils import registry
 # from tensor2tensor.utils import restore_hook
 from tensor2tensor.utils import t2t_model
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
+from tensorflow.contrib import rnn as contrib_rnn
 
 # pylint: disable=unused-import
 from tensorflow.contrib.layers.python.layers import utils
@@ -51,13 +53,15 @@ class VqaAttentionBaseline(t2t_model.T2TModel):
 
   def body(self, features):
     hp = self.hparams
-    # pylint: disable=eval-used
+    model_fn = resnet_v1_152
+    if hp.image_model_fn != "resnet_v1_152":
+      model_fn = eval(hp.image_model_fn)  # pylint: disable=eval-used
     if hp.image_input_type == "image":
       image_feat = vqa_layers.image_embedding(
           features["inputs"],
-          model_fn=eval(hp.image_model_fn),
+          model_fn=model_fn,
           trainable=hp.train_resnet,
-          is_training=hp.mode == tf.estimator.ModeKeys.TRAIN)
+          is_training=hp.mode == tf_estimator.ModeKeys.TRAIN)
     else:
       image_feat = features["inputs"]
 
@@ -130,7 +134,7 @@ class VqaSimpleImageSelfAttention(VqaAttentionBaseline):
           features["inputs"],
           model_fn=eval(hp.image_model_fn),
           trainable=hp.train_resnet,
-          is_training=hp.mode == tf.estimator.ModeKeys.TRAIN)
+          is_training=hp.mode == tf_estimator.ModeKeys.TRAIN)
     else:
       image_feat = features["inputs"]
 
@@ -236,7 +240,7 @@ def _get_rnn_cell(hparams):
   if hparams.rnn_type == "lstm":
     rnn_cell = tf.nn.rnn_cell.BasicLSTMCell
   elif hparams.rnn_type == "lstm_layernorm":
-    rnn_cell = tf.contrib.rnn.LayerNormBasicLSTMCell
+    rnn_cell = contrib_rnn.LayerNormBasicLSTMCell
   return tf.nn.rnn_cell.DropoutWrapper(
       rnn_cell(hparams.hidden_size),
       output_keep_prob=1.0-hparams.dropout)

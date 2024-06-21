@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,8 +29,9 @@ from tensor2tensor.layers import modalities
 from tensor2tensor.utils import hparam
 from tensor2tensor.utils import test_utils
 
-import tensorflow as tf
-tf.compat.v1.enable_eager_execution()
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
+tf.enable_eager_execution()
 
 
 def assert_tensors_equal(sess, t1, t2, n):
@@ -58,7 +59,7 @@ class ProblemTest(parameterized.TestCase, tf.test.TestCase):
   @test_utils.run_in_graph_mode_only()
   def testNoShuffleDeterministic(self):
     problem = algorithmic.TinyAlgo()
-    dataset = problem.dataset(mode=tf.estimator.ModeKeys.TRAIN,
+    dataset = problem.dataset(mode=tf_estimator.ModeKeys.TRAIN,
                               data_dir=algorithmic.TinyAlgo.data_dir,
                               shuffle_files=False)
 
@@ -72,10 +73,10 @@ class ProblemTest(parameterized.TestCase, tf.test.TestCase):
   def testNoShufflePreprocess(self):
 
     problem = algorithmic.TinyAlgo()
-    dataset1 = problem.dataset(mode=tf.estimator.ModeKeys.TRAIN,
+    dataset1 = problem.dataset(mode=tf_estimator.ModeKeys.TRAIN,
                                data_dir=algorithmic.TinyAlgo.data_dir,
                                shuffle_files=False, preprocess=False)
-    dataset2 = problem.dataset(mode=tf.estimator.ModeKeys.TRAIN,
+    dataset2 = problem.dataset(mode=tf_estimator.ModeKeys.TRAIN,
                                data_dir=algorithmic.TinyAlgo.data_dir,
                                shuffle_files=False, preprocess=True)
 
@@ -188,6 +189,46 @@ class ProblemTest(parameterized.TestCase, tf.test.TestCase):
           feed_dict={serving_input_fn_input: serialized_examples})
       self.assertEqual(output_shape[0], batch_size)
       self.assertEqual(output_shape[1], max_length)
+
+  @test_utils.run_in_graph_and_eager_modes()
+  def testInputAndTargetVocabSizesAreReversed(self):
+
+    class WasReversedTestProblem(problem_module.Problem):
+
+      def __init__(self, input_vocab_size, target_vocab_size, was_reversed):
+        super(WasReversedTestProblem, self).__init__(was_reversed, False)
+        self.input_vocab_size = input_vocab_size
+        self.target_vocab_size = target_vocab_size
+
+      def hparams(self, defaults, model_hparams):
+        hp = defaults
+        hp.vocab_size = {"targets": self.target_vocab_size,
+                         "inputs": self.input_vocab_size}
+
+    problem = WasReversedTestProblem(input_vocab_size=1,
+                                     target_vocab_size=3,
+                                     was_reversed=True)
+    p_hparams = problem.get_hparams()
+    self.assertEqual(p_hparams.vocab_size["inputs"], 3)
+    self.assertEqual(p_hparams.vocab_size["targets"], 1)
+
+  @test_utils.run_in_graph_and_eager_modes()
+  def testInputAndTargetModalitiesAreReversed(self):
+
+    class WasReversedTestProblem(problem_module.Problem):
+
+      def __init__(self, was_reversed):
+        super(WasReversedTestProblem, self).__init__(was_reversed, False)
+
+      def hparams(self, defaults, model_hparams):
+        hp = defaults
+        hp.modality["inputs"] = "inputs_modality"
+        hp.modality["targets"] = "targets_modality"
+
+    problem = WasReversedTestProblem(was_reversed=True)
+    p_hparams = problem.get_hparams()
+    self.assertEqual(p_hparams.modality["inputs"], "targets_modality")
+    self.assertEqual(p_hparams.modality["targets"], "inputs_modality")
 
 
 if __name__ == "__main__":

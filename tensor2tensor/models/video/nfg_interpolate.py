@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,14 +21,17 @@ from __future__ import print_function
 import os
 from absl import flags
 import numpy as np
+from six.moves import zip
 from tensor2tensor.bin import t2t_trainer  # pylint: disable=unused-import
 from tensor2tensor.data_generators import image_utils
 from tensor2tensor.layers import common_layers
 from tensor2tensor.layers import common_video
 from tensor2tensor.models.research import glow_ops
+from tensor2tensor.utils import contrib
 from tensor2tensor.utils import decoding
 from tensor2tensor.utils import trainer_lib
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
 
 # Flags placeholders.
 flags.DEFINE_string("checkpoint_path", None,
@@ -47,7 +50,7 @@ flags = tf.flags
 FLAGS = flags.FLAGS
 
 
-arg_scope = tf.contrib.framework.arg_scope
+arg_scope = contrib.framework().arg_scope
 
 
 def decode_hparams(overrides=""):
@@ -111,8 +114,8 @@ def interpolate(features, hparams, decode_hp):
 
   Args:
     features: dict of tensors
-    hparams: tf.contrib.training.HParams, training hparams.
-    decode_hp: tf.contrib.training.HParams, decode hparams.
+    hparams: HParams, training hparams.
+    decode_hp: HParams, decode hparams.
   Returns:
     images: interpolated images, 4-D Tensor, shape=(num_interp, H, W, C)
     first_frame: image, 3-D Tensor, shape=(1, H, W, C)
@@ -178,8 +181,8 @@ def interpolations_to_summary(sample_ind, interpolations, first_frame,
     interpolations: Numpy array, shape=(num_interp, H, W, 3)
     first_frame: Numpy array, shape=(HWC)
     last_frame: Numpy array, shape=(HWC)
-    hparams: tf.contrib.training.HParams, train hparams
-    decode_hp: tf.contrib.training.HParams, decode hparams
+    hparams: HParams, train hparams
+    decode_hp: HParams, decode hparams
   Returns:
     summaries: list of tf Summary Values.
   """
@@ -220,7 +223,7 @@ def main(_):
   # prepare dataset using Predict mode.
   dataset_split = "test" if FLAGS.eval_use_test_set else None
   dataset = hparams.problem.dataset(
-      tf.estimator.ModeKeys.PREDICT, shuffle_files=False, hparams=hparams,
+      tf_estimator.ModeKeys.PREDICT, shuffle_files=False, hparams=hparams,
       data_dir=FLAGS.data_dir, dataset_split=dataset_split)
   dataset = dataset.batch(hparams.batch_size)
   dataset = dataset.make_one_shot_iterator().get_next()

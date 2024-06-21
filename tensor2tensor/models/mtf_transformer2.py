@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ from tensor2tensor.layers import modalities
 from tensor2tensor.utils import mtf_model
 from tensor2tensor.utils import registry
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 
 @registry.register_model
@@ -218,21 +218,34 @@ class MtfBitransformer(MtfUnitransformer):
     hparams = self._hparams
     encoder_layer_stack = layer_stack_from_hparams(hparams, "encoder_")
     decoder_layer_stack = layer_stack_from_hparams(hparams, "decoder_")
-    return transformer.Bitransformer(
-        encoder_layer_stack=encoder_layer_stack,
-        decoder_layer_stack=decoder_layer_stack,
-        encoder_d_model=hparams.d_model,
-        decoder_d_model=hparams.d_model,
+    encoder = transformer.Unitransformer(
+        layer_stack=encoder_layer_stack,
+        d_model=hparams.d_model,
         input_vocab_size=self._inputs_vocab_size,
-        output_vocab_size=self._targets_vocab_size,
+        output_vocab_size=None,
+        autoregressive=False,
         max_length=hparams.max_length,
-        shared_embedding=hparams.shared_embedding,
+        name="encoder",
+        layout=hparams.layout,
+        mesh_shape=hparams.mesh_shape,
+    )
+    decoder = transformer.Unitransformer(
+        layer_stack=decoder_layer_stack,
+        d_model=hparams.d_model,
+        input_vocab_size=self._targets_vocab_size,
+        output_vocab_size=self._targets_vocab_size,
+        autoregressive=True,
+        max_length=hparams.max_length,
+        label_smoothing=hparams.label_smoothing,
         shared_embedding_and_softmax_weights=(
             hparams.shared_embedding_and_softmax_weights),
-        label_smoothing=hparams.label_smoothing,
         z_loss=hparams.z_loss,
+        name="decoder",
         layout=hparams.layout,
-        mesh_shape=hparams.mesh_shape)
+        mesh_shape=hparams.mesh_shape,
+    )
+    return transformer.Bitransformer(
+        encoder, decoder, shared_embedding=hparams.shared_embedding)
 
   def _mtf_model_fn(self, features, mesh):
     self._original_features = features

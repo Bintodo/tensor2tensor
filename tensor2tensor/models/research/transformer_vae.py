@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -32,11 +32,13 @@ from tensor2tensor.layers import latent_layers
 from tensor2tensor.layers import modalities
 from tensor2tensor.models import transformer
 from tensor2tensor.utils import beam_search
+from tensor2tensor.utils import contrib
 from tensor2tensor.utils import expert_utils
 from tensor2tensor.utils import registry
 from tensor2tensor.utils import t2t_model
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
 
 
 _DO_SUMMARIES = True
@@ -103,7 +105,7 @@ def top_k_softmax(x, k):
 def top_k_experts(x, k, hparams):
   x_shape = common_layers.shape_list(x)
   x_flat = tf.reshape(x, [-1, common_layers.shape_list(x)[-1]])
-  is_training = hparams.mode == tf.estimator.ModeKeys.TRAIN
+  is_training = hparams.mode == tf_estimator.ModeKeys.TRAIN
   gates, load = expert_utils.noisy_top_k_gating(
       x_flat, 2 ** hparams.z_size, is_training, k)
   gates_shape = [x_shape[0], x_shape[1], x_shape[2], 2 ** hparams.z_size]
@@ -377,7 +379,7 @@ def ae_transformer_internal(inputs,
                                 minval=0,
                                 maxval=1 + hparams.word_shuffle)
       targets_idx += noise
-      permutation = tf.contrib.framework.argsort(targets_idx)
+      permutation = contrib.framework().argsort(targets_idx)
       targets_permuted = tf.gather(targets, indices=permutation, axis=1)
       targets = targets_permuted
     targets, _ = common_layers.pad_to_same_length(
@@ -399,7 +401,7 @@ def ae_transformer_internal(inputs,
       targets_noisy = targets
 
     targets_c = compress(targets_noisy, inputs, False, hparams, "compress")
-    if hparams.mode != tf.estimator.ModeKeys.PREDICT:
+    if hparams.mode != tf_estimator.ModeKeys.PREDICT:
       # Compress and bottleneck.
       latents_dense, latents_discrete, extra_loss, embed, neg_q_entropy = (
           hparams.bottleneck(inputs=targets_c,
@@ -409,7 +411,7 @@ def ae_transformer_internal(inputs,
       if _DO_SUMMARIES:
         tf.summary.histogram("b0", tf.reshape(latents_discrete[:, 0, :], [-1]))
       pc = common_layers.inverse_exp_decay(hparams.startup_steps)
-      pc = pc if hparams.mode == tf.estimator.ModeKeys.TRAIN else 1.0
+      pc = pc if hparams.mode == tf_estimator.ModeKeys.TRAIN else 1.0
       cond = tf.less(tf.random_uniform([batch_size]), pc)
       latents_dense = tf.where(cond, latents_dense, targets_c)
       # TODO(lukaszkaiser): return extra losses batchwise, multiply before mean.
@@ -448,7 +450,7 @@ def ae_transformer_internal(inputs,
           return bn
         inputs_c = bn_inputs()
         ptc = 1.0 - common_layers.inverse_lin_decay(200000) * 0.5
-        ptc = ptc if hparams.mode == tf.estimator.ModeKeys.TRAIN else 1.0
+        ptc = ptc if hparams.mode == tf_estimator.ModeKeys.TRAIN else 1.0
         latents_dense = tf.where(tf.less(tf.random_uniform([batch_size]), ptc),
                                  latents_dense, inputs_c)
     else:
@@ -496,7 +498,7 @@ def ae_transformer_internal(inputs,
       masking = tf.minimum(tf.maximum(masking, 0.0), 1.0)
       if hparams.use_predict_mask:
         masking = predict_mask
-      if hparams.mode == tf.estimator.ModeKeys.PREDICT:
+      if hparams.mode == tf_estimator.ModeKeys.PREDICT:
         masking = predict_mask
       mask = tf.less(masking, tf.random_uniform(
           common_layers.shape_list(targets)[:-1]))
@@ -507,6 +509,8 @@ def ae_transformer_internal(inputs,
       # reshape back to 4d here
       if hparams.task == "image":
         targets = tf.reshape(targets, original_targets_shape)
+    else:
+      targets = d
 
   res = decode_transformer(inputs, ed, targets, hparams, "decoder",
                            causal=hparams.causal)

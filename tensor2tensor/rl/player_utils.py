@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -31,11 +31,11 @@ from tensor2tensor.models.research.rl import get_policy
 from tensor2tensor.models.research.rl import make_simulated_env_fn_from_hparams
 from tensor2tensor.rl import rl_utils
 from tensor2tensor.rl.envs.simulated_batch_gym_env import FlatBatchEnv
+from tensor2tensor.utils import hparam
 from tensor2tensor.utils import trainer_lib
-from tensor2tensor.utils.hparam import HParams
 from tensor2tensor.utils.misc_utils import camelcase_to_snakecase
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 
 flags = tf.flags
@@ -283,7 +283,7 @@ def create_simulated_env(
     if key not in other_hparams:
       other_hparams[key] = a_bit_risky_defaults[key]
 
-  hparams = HParams(
+  hparams = hparam.HParams(
       grayscale=grayscale,
       resize_width_factor=resize_width_factor,
       resize_height_factor=resize_height_factor,

@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,7 +30,7 @@ from tensor2tensor.models.video import basic_deterministic_params
 
 from tensor2tensor.utils import registry
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 tfl = tf.layers
 _MAX_BATCH = 128
@@ -128,6 +128,9 @@ class NextFrameBasicStochasticDiscrete(
     filters = hparams.hidden_size
     kernel = (4, 4)
     layer_shape = common_layers.shape_list(layer)
+    activation_fn = common_layers.belu
+    if hparams.activation_fn == "relu":
+      activation_fn = tf.nn.relu
 
     def add_bits(layer, bits):
       z_mul = tfl.dense(bits, final_filters, name="unbottleneck_mul")
@@ -169,7 +172,7 @@ class NextFrameBasicStochasticDiscrete(
             filters *= 2
           x = common_attention.add_timing_signal_nd(x)
           x = tfl.conv2d(x, filters, kernel,
-                         activation=common_layers.belu,
+                         activation=activation_fn,
                          strides=(2, 2), padding="SAME")
           x = common_layers.layer_norm(x)
     else:

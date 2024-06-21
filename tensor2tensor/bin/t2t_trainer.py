@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,12 +21,12 @@ from __future__ import print_function
 import contextlib
 import os
 import sys
-import gin
 from tensor2tensor import models  # pylint: disable=unused-import
 from tensor2tensor import problems as problems_lib  # pylint: disable=unused-import
 from tensor2tensor.data_generators import problem  # pylint: disable=unused-import
 
 from tensor2tensor.utils import cloud_mlengine
+from tensor2tensor.utils import contrib
 from tensor2tensor.utils import decoding
 from tensor2tensor.utils import flags as t2t_flags  # pylint: disable=unused-import
 from tensor2tensor.utils import hparams_lib
@@ -34,14 +34,8 @@ from tensor2tensor.utils import mlperf_log
 from tensor2tensor.utils import registry
 from tensor2tensor.utils import trainer_lib
 from tensor2tensor.utils import usr_dir
-import tensorflow as tf
-
-from tensorflow.contrib.tpu.python.tpu import tpu_config
-
-try:
-  from tensor2tensor.trax import trax  # pylint: disable=g-import-not-at-top
-except (TypeError, ImportError):
-  pass
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
 
 
 flags = tf.flags
@@ -56,11 +50,23 @@ flags.DEFINE_string("t2t_usr_dir", None,
                     "available to the t2t-trainer.")
 flags.DEFINE_integer("random_seed", None, "Random seed.")
 flags.DEFINE_integer("tpu_num_shards", 8, "Number of tpu shards.")
+flags.DEFINE_string("tpu_job_name", None,
+                    "TPU job name. TPUEstimator can auto-infer this but if the "
+                    "configuration is esoteric it should be provided here.")
 flags.DEFINE_integer("iterations_per_loop", 100,
                      "Number of iterations in a TPU training loop.")
 flags.DEFINE_bool("use_tpu", False, "Whether to use TPU.")
 flags.DEFINE_bool("use_tpu_estimator", False, "Whether to use TPUEstimator. "
                   "This is always enabled when use_tpu is True.")
+flags.DEFINE_integer("export_saved_model_api_version", 1,
+                     "ExportSavedModelApiVersion, 1 (V1, default) or 2 (V2). "
+                     "Default V2 uses model_fn_inference_on_tpu for rewrite."
+                     "Flag use_guarantee_const is only enabled in V2.")
+flags.DEFINE_bool("use_guarantee_const_getter", False,
+                  "Whether to use GuaranteeConst Ops to mark all weights as "
+                  "constant. It may improve TPU inference performance and "
+                  "reduce HBM arguments usage. Only available when "
+                  "export_saved_model_api_version=2 and use_tpu=True.")
 flags.DEFINE_bool("xla_compile", False,
                   "Whether to use XLA to compile model_fn.")
 flags.DEFINE_integer("xla_jit_level", -1,
@@ -77,7 +83,6 @@ flags.DEFINE_integer("inter_op_parallelism_threads", 0,
 flags.DEFINE_integer("intra_op_parallelism_threads", 0,
                      "Number of intra_op_parallelism_threads to use for CPU. "
                      "See TensorFlow config.proto for details.")
-flags.DEFINE_bool("jax", False, "Whether to use trax.")
 # TODO(lukaszkaiser): resolve memory and variable assign issues and set to True.
 flags.DEFINE_bool(
     "optionally_use_dist_strat", False,
@@ -136,6 +141,9 @@ flags.DEFINE_string("job-dir", None,
 flags.DEFINE_integer("log_step_count_steps", 100,
                      "Number of local steps after which progress is printed "
                      "out")
+flags.DEFINE_bool("gpu_automatic_mixed_precision", False,
+                  "Whether to employ GPU automatic mixed precision training "
+                  "(via graph rewrite and dynamic loss scaling).")
 
 
 
@@ -201,6 +209,8 @@ def create_experiment_fn():
       use_tpu=FLAGS.use_tpu,
       use_tpu_estimator=FLAGS.use_tpu_estimator,
       use_xla=FLAGS.xla_compile,
+      export_saved_model_api_version=FLAGS.export_saved_model_api_version,
+      use_guarantee_const_getter=FLAGS.use_guarantee_const_getter,
       warm_start_from=FLAGS.warm_start_from,
       decode_from_file=FLAGS.decode_from_file,
       decode_to_file=FLAGS.decode_to_file,
@@ -222,15 +232,19 @@ def create_run_config(hp, output_dir=None):
   save_ckpt_secs = FLAGS.save_checkpoints_secs or None
   if save_ckpt_secs:
     save_ckpt_steps = None
-  assert FLAGS.output_dir or FLAGS.checkpoint_path
+  assert FLAGS.output_dir
   tpu_config_extra_kwargs = {}
+  if FLAGS.tpu_job_name is not None:
+    tpu_config_extra_kwargs["tpu_job_name"] = FLAGS.tpu_job_name
 
   if getattr(hp, "mtf_mode", False):
     save_ckpt_steps = None  # Disable the default saver
     save_ckpt_secs = None  # Disable the default saver
     tpu_config_extra_kwargs = {
-        "num_cores_per_replica": 1,
-        "per_host_input_for_training": tpu_config.InputPipelineConfig.BROADCAST,
+        "num_cores_per_replica":
+            1,
+        "per_host_input_for_training":
+            tf_estimator.tpu.InputPipelineConfig.BROADCAST,
     }
 
   # the various custom getters we have written do not play well together yet.
@@ -292,7 +306,7 @@ def generate_data():
 @contextlib.contextmanager
 def profile_context():
   if FLAGS.profile:
-    with tf.contrib.tfprof.ProfileContext(
+    with contrib.tfprof().ProfileContext(
         "t2tprof", trace_steps=range(100), dump_steps=range(100)) as pctx:
       opts = tf.profiler.ProfileOptionBuilder.time_and_memory()
       pctx.add_auto_profiling("op", opts, range(100))
@@ -366,43 +380,6 @@ def run_std_server():
 def main(argv):
   tf.logging.set_verbosity(tf.logging.INFO)
 
-  if FLAGS.jax:
-    # Setup trax FLAGS
-    dataset = FLAGS.problem
-    model = FLAGS.model
-    data_dir = FLAGS.data_dir
-    output_dir = FLAGS.output_dir
-    config_file = [FLAGS.hparams_set]
-    config = [
-        "train.train_steps=%d" % FLAGS.train_steps,
-        "train.eval_steps=%d" % FLAGS.eval_steps,
-        "train.eval_frequency=%d" % FLAGS.local_eval_frequency,
-    ] + str(FLAGS.hparams).split(",")
-
-    # Copied _setup_gin exactly from trax/trainer.py and removed "FLAGS."
-
-    def _setup_gin():
-      """Setup gin configuration."""
-      # Imports for configurables
-      # pylint: disable=g-import-not-at-top,unused-import,g-bad-import-order,reimported,unused-variable
-      from tensor2tensor.trax import inputs as _trax_inputs
-      from tensor2tensor.trax import models as _trax_models
-      from tensor2tensor.trax import optimizers as _trax_opt
-      # pylint: disable=g-import-not-at-top,unused-import,g-bad-import-order,reimported,unused-variable
-
-      configs = config or []
-      # Override with --dataset and --model
-      if dataset:
-        configs.append("inputs.dataset_name='%s'" % dataset)
-        configs.append("inputs.data_dir='%s'" % data_dir)
-        configs.append("train.inputs=@trax.inputs.inputs")
-      if model:
-        configs.append("train.model=@trax.models.%s" % model)
-      gin.parse_config_files_and_bindings(config_file, configs)
-
-    _setup_gin()
-    trax.train(output_dir=output_dir)
-
   usr_dir.import_usr_dir(FLAGS.t2t_usr_dir)
 
   # If we just have to print the registry, do that and exit early.
@@ -411,7 +388,10 @@ def main(argv):
   # Create HParams.
   if argv:
     set_hparams_from_args(argv[1:])
-  hparams = create_hparams()
+  if FLAGS.schedule != "run_std_server":
+    hparams = create_hparams()
+  if FLAGS.gpu_automatic_mixed_precision:
+    setattr(hparams, "gpu_automatic_mixed_precision", True)
 
   if FLAGS.schedule == "train" or FLAGS.schedule == "train_eval_and_decode":
     mlperf_log.transformer_print(key=mlperf_log.RUN_START, hparams=hparams)

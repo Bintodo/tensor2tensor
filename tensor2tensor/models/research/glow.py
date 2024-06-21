@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,12 +24,14 @@ from tensor2tensor.layers import common_hparams
 from tensor2tensor.layers import common_layers
 from tensor2tensor.models.research import glow_init_hook
 from tensor2tensor.models.research import glow_ops
+from tensor2tensor.utils import contrib
 from tensor2tensor.utils import registry
 from tensor2tensor.utils import t2t_model
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
 
-arg_scope = tf.contrib.framework.arg_scope
-add_arg_scope = tf.contrib.framework.add_arg_scope
+arg_scope = contrib.framework().arg_scope
+add_arg_scope = contrib.framework().add_arg_scope
 
 GLOW_DECODE_HPARAMS = ("identity_output=True,log_results=False,"
                        "decode_in_memory=True,display_decoded_images=True")
@@ -100,7 +102,7 @@ class Glow(t2t_model.T2TModel):
 
   @property
   def is_training(self):
-    return self.hparams.mode == tf.estimator.ModeKeys.TRAIN
+    return self.hparams.mode == tf_estimator.ModeKeys.TRAIN
 
   def infer(self, features, *args, **kwargs):  # pylint: disable=arguments-differ
     del args, kwargs
@@ -128,7 +130,7 @@ class Glow(t2t_model.T2TModel):
       init_features: initialization features.
     """
     train_dataset = self.hparams.problem.dataset(
-        tf.estimator.ModeKeys.TRAIN, hparams=self.hparams)
+        tf_estimator.ModeKeys.TRAIN, hparams=self.hparams)
     train_dataset = train_dataset.batch(self.hparams.init_batch_size)
     train_dataset = self.init_preprocess(train_dataset)
     return train_dataset.make_one_shot_iterator().get_next()

@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,7 +24,8 @@ from tensor2tensor.layers import common_layers
 from tensor2tensor.utils import expert_utils
 from tensor2tensor.utils import mlperf_log
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
 
 
 # TODO(lukaszkaiser): remove this function when not needed any more.
@@ -32,7 +33,9 @@ def layers():
   return common_layers.layers()
 
 
-def transformer_prepare_encoder(inputs, target_space, hparams, features=None):
+def transformer_prepare_encoder(inputs, target_space, hparams, features=None,
+                                type_ids=None, num_types=None,
+                                reuse_target_embedding=tf.AUTO_REUSE):
   """Prepare one shard of the model for the encoder.
 
   Args:
@@ -41,6 +44,11 @@ def transformer_prepare_encoder(inputs, target_space, hparams, features=None):
     hparams: run hyperparameters
     features: optionally pass the entire features dictionary as well.
       This is needed now for "packed" datasets.
+    type_ids: optional, an int64 Tensor of shape [batch, length] that allows
+      for adding type embeddings, similar to positional embeddings.
+    num_types: optional, an int that decides the number of types in type_ids.
+    reuse_target_embedding: option to reuse variable name in the case that
+      symbol modalities are reused between inputs/targets.
 
   Returns:
     encoder_input: a Tensor, bottom of encoder stack
@@ -94,7 +102,8 @@ def transformer_prepare_encoder(inputs, target_space, hparams, features=None):
         32,
         ishape_static[-1],
         name="target_space_embedding",
-        dtype=hparams.get("activation_dtype", "float32"))
+        dtype=hparams.get("activation_dtype", "float32"),
+        reuse=reuse_target_embedding)
     emb_target_space = tf.reshape(emb_target_space, [1, 1, -1])
     encoder_input += emb_target_space
   if hparams.pos == "timing":
@@ -103,10 +112,20 @@ def transformer_prepare_encoder(inputs, target_space, hparams, features=None):
           encoder_input, inputs_position)
     else:
       encoder_input = common_attention.add_timing_signal_1d(encoder_input)
+  elif hparams.pos == "timing_from_features":
+    encoder_input = common_attention.add_timing_signals_from_features(
+        encoder_input, features, hparams.position_features)
   elif hparams.pos == "emb":
     encoder_input = common_attention.add_positional_embedding(
         encoder_input, hparams.max_length, "inputs_positional_embedding",
         inputs_position)
+
+  # Add type embeddings
+  if type_ids is not None:
+    if not num_types:
+      raise ValueError("Need to set num_types as well.")
+    encoder_input = common_attention.add_positional_embedding(
+        encoder_input, num_types, "inputs_type_embedding", type_ids)
 
   encoder_self_attention_bias = common_layers.cast_like(
       encoder_self_attention_bias, encoder_input)
@@ -183,6 +202,14 @@ def transformer_encoder(encoder_input,
     for layer in range(hparams.num_encoder_layers or hparams.num_hidden_layers):
       with tf.variable_scope("layer_%d" % layer):
         with tf.variable_scope("self_attention"):
+          if layer < hparams.get("num_area_layers", 0):
+            max_area_width = hparams.get("max_area_width", 1)
+            max_area_height = hparams.get("max_area_height", 1)
+            memory_height = hparams.get("memory_height", 1)
+          else:
+            max_area_width = 1
+            max_area_height = 1
+            memory_height = 1
           y = common_attention.multihead_attention(
               common_layers.layer_preprocess(x, hparams),
               None,
@@ -203,7 +230,16 @@ def transformer_encoder(encoder_input,
               max_length=hparams.get("max_length"),
               vars_3d=hparams.get("attention_variables_3d"),
               activation_dtype=hparams.get("activation_dtype", "float32"),
-              weight_dtype=hparams.get("weight_dtype", "float32"))
+              weight_dtype=hparams.get("weight_dtype", "float32"),
+              hard_attention_k=hparams.get("hard_attention_k", 0),
+              gumbel_noise_weight=hparams.get("gumbel_noise_weight", 0.0),
+              max_area_width=max_area_width,
+              max_area_height=max_area_height,
+              memory_height=memory_height,
+              area_key_mode=hparams.get("area_key_mode", "none"),
+              area_value_mode=hparams.get("area_value_mode", "none"),
+              training=(hparams.get("mode", tf_estimator.ModeKeys.TRAIN)
+                        == tf_estimator.ModeKeys.TRAIN))
           x = common_layers.layer_postprocess(x, y, hparams)
         with tf.variable_scope("ffn"):
           y = transformer_ffn_layer(
@@ -336,7 +372,7 @@ def transformer_ffn_layer(x,
     return common_layers.sru(x)
   elif ffn_layer == "local_moe_tpu":
     overhead = hparams.moe_overhead_eval
-    if hparams.mode == tf.estimator.ModeKeys.TRAIN:
+    if hparams.mode == tf_estimator.ModeKeys.TRAIN:
       overhead = hparams.moe_overhead_train
     ret, loss = expert_utils.local_moe_tpu(
         x,
@@ -347,7 +383,7 @@ def transformer_ffn_layer(x,
         loss_coef=hparams.moe_loss_coef)
   elif ffn_layer == "local_moe":
     overhead = hparams.moe_overhead_eval
-    if hparams.mode == tf.estimator.ModeKeys.TRAIN:
+    if hparams.mode == tf_estimator.ModeKeys.TRAIN:
       overhead = hparams.moe_overhead_train
     ret, loss = expert_utils.local_moe(
         x,

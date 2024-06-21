@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -35,7 +35,7 @@ import six
 from six.moves import range  # pylint: disable=redefined-builtin
 from tensor2tensor.data_generators import tokenizer
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 # Reserved tokens for things like padding and EOS symbols.
 PAD = "<pad>"
@@ -624,7 +624,9 @@ class SubwordTextEncoder(TextEncoder):
         # If there is no possible encoding of the escaped token then one of the
         # characters in the token is not in the alphabet. This should be
         # impossible and would be indicative of a bug.
-        assert False, "Token substring not found in subtoken vocabulary."
+        raise ValueError(
+            "Token substring '%s' not found in subtoken vocabulary." %
+            escaped_token)
 
     return ret
 
@@ -924,7 +926,7 @@ class SubwordTextEncoder(TextEncoder):
     """
     subtoken_strings = []
     for line in f:
-      s = line.strip()
+      s = line.rstrip()
       # Some vocab files wrap words in single quotes, but others don't
       if ((s.startswith("'") and s.endswith("'")) or
           (s.startswith("\"") and s.endswith("\""))):

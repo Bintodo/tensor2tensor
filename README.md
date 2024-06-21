@@ -16,14 +16,12 @@ welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg)](CO
 of deep learning models and datasets designed to make deep learning more
 accessible and [accelerate ML
 research](https://research.googleblog.com/2017/06/accelerating-deep-learning-research.html).
-T2T is actively used and maintained by researchers and engineers within the
+
+
+T2T was developed by researchers and engineers in the
 [Google Brain team](https://research.google.com/teams/brain/) and a community
-of users. We're eager to collaborate with you too, so feel free to
-[open an issue on GitHub](https://github.com/tensorflow/tensor2tensor/issues)
-or send along a pull request (see [our contribution doc](CONTRIBUTING.md)).
-You can chat with us on
-[Gitter](https://gitter.im/tensor2tensor/Lobby) and join the
-[T2T Google Group](https://groups.google.com/forum/#!forum/tensor2tensor).
+of users. It is now deprecated &mdash; we keep it running and welcome
+bug-fixes, but encourage users to use the successor library [Trax](https://github.com/google/trax).
 
 ### Quick Start
 
@@ -210,6 +208,7 @@ There are a number of translation data-sets in T2T:
 * English-Czech: `--problem=translate_encs_wmt32k`
 * English-Chinese: `--problem=translate_enzh_wmt32k`
 * English-Vietnamese: `--problem=translate_envi_iwslt32k`
+* English-Spanish: `--problem=translate_enes_wmt32k`
 
 You can get translations in the other direction by appending `_rev` to
 the problem name, e.g., for German-English use
@@ -225,6 +224,8 @@ which is close to state-of-the art. If training on a single GPU, try the
 `--hparams_set=transformer_base_single_gpu` setting. For very good results
 or larger data-sets (e.g., for English-French), try the big model
 with `--hparams_set=transformer_big`.
+
+See this [example](https://github.com/tensorflow/tensor2tensor/blob/master/tensor2tensor/notebooks/Transformer_translate.ipynb) to know how the translation works.
 
 ## Basics
 
@@ -473,5 +474,7 @@ T2T](https://research.googleblog.com/2017/06/accelerating-deep-learning-research
 * [Universal Transformers](https://arxiv.org/abs/1807.03819)
 * [Attending to Mathematical Language with Transformers](https://arxiv.org/abs/1812.02825)
 * [The Evolved Transformer](https://arxiv.org/abs/1901.11117)
+* [Model-Based Reinforcement Learning for Atari](https://arxiv.org/abs/1903.00374)
+* [VideoFlow: A Flow-Based Generative Model for Video](https://arxiv.org/abs/1903.01434)
 
-*Note: This is not an official Google product.*
+*NOTE: This is not an official Google product.*

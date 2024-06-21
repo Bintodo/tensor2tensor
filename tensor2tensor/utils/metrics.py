@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,12 +24,11 @@ import six
 from tensor2tensor.layers import common_layers
 from tensor2tensor.layers import modalities
 from tensor2tensor.utils import bleu_hook
+from tensor2tensor.utils import contrib
 from tensor2tensor.utils import rouge
 from tensor2tensor.utils import sari_hook
 
-import tensorflow as tf
-
-from tensorflow.contrib.eager.python import tfe
+import tensorflow.compat.v1 as tf
 from tensorflow.python.util import tf_inspect as inspect
 
 
@@ -45,20 +44,25 @@ class Metrics(object):
   APPROX_BLEU = "approx_bleu_score"
   APPROX_SARI = "approx_sari_score"
   RMSE = "rmse"
+  UNPADDED_MSE = "unpadded_mse"
   LOG_POISSON = "log_poisson"
   PEARSON = "pearson"
   R2 = "r_squared"
   ROUGE_2_F = "rouge_2_fscore"
   ROUGE_L_F = "rouge_L_fscore"
   EDIT_DISTANCE = "edit_distance"
+  PREFIX_ACCURACY = "prefix_accuracy"
   WORD_ERROR_RATE = "word_error_rate"
   SET_PRECISION = "set_precision"
   SET_RECALL = "set_recall"
   SOFTMAX_CROSS_ENTROPY_ONE_HOT = "softmax_cross_entropy_one_hot"
   SIGMOID_ACCURACY_ONE_HOT = "sigmoid_accuracy_one_hot"
+  SIGMOID_ACCURACY = "sigmoid_accuracy"
   SIGMOID_RECALL_ONE_HOT = "sigmoid_recall_one_hot"
   SIGMOID_PRECISION_ONE_HOT = "sigmoid_precision_one_hot"
   SIGMOID_CROSS_ENTROPY_ONE_HOT = "sigmoid_cross_entropy_one_hot"
+  TWO_CLASS_ACCURACY = "two_class_accuracy"
+  TWO_CLASS_LOG_LIKELIHOOD = "two_class_log_likelihood"
   ROC_AUC = "roc_auc"
   IMAGE_SUMMARY = "image_summary"
   DMOL_PERPLEXITY = "disc_mol_neg_log_perplexity"
@@ -83,6 +87,15 @@ def padded_rmse(predictions, labels, weights_fn=common_layers.weights_all):
   error = tf.pow(predictions - labels, 2)
   error_sqrt = tf.sqrt(tf.reduce_mean(error * weights))
   return error_sqrt, tf.reduce_sum(weights)
+
+
+def unpadded_mse(predictions, labels, weights_fn=common_layers.weights_all):
+  predictions = tf.to_float(predictions)
+  labels = tf.to_float(labels)
+  weights = weights_fn(labels)
+  error = tf.pow(predictions - labels, 2)
+  mean_error = tf.reduce_mean(error * weights)
+  return mean_error, tf.reduce_sum(weights)
 
 
 def abs_error(predictions, labels, weights_fn=None):
@@ -161,6 +174,41 @@ def rounding_sequence_accuracy(predictions,
   return correct_seq, tf.constant(1.0)
 
 
+def two_class_accuracy(predictions, labels, weights_fn=None):
+  """Accuracy for two class classification with 0/1 labels."""
+  with tf.variable_scope("two_class_accuracy", values=[predictions, labels]):
+    del weights_fn
+    hard_predictions = tf.to_int32(tf.math.round(tf.squeeze(predictions)))
+    int_labels = tf.to_int32(labels)
+    _, accuracy = tf.metrics.accuracy(labels=int_labels,
+                                      predictions=hard_predictions)
+    return accuracy, tf.constant(1.0)
+
+
+def two_class_log_likelihood(predictions, labels, weights_fn=None):
+  """Log-likelihood for two class classification with 0/1 labels.
+
+  Args:
+    predictions: A float valued tensor of shape [`batch_size`].  Each
+      component should be between 0 and 1.
+    labels: An int valued tensor of shape [`batch_size`].  Each component
+      should either be 0 or 1.
+    weights_fn: unused.
+
+  Returns:
+    A pair, with the average log likelihood in the first component.
+  """
+  del weights_fn
+  float_predictions = tf.cast(tf.squeeze(predictions), dtype=tf.float64)
+  batch_probs = tf.stack([1. - float_predictions, float_predictions], axis=-1)
+  int_labels = tf.cast(tf.squeeze(labels), dtype=tf.int32)
+  onehot_targets = tf.cast(tf.one_hot(int_labels, 2), dtype=tf.float64)
+  chosen_probs = tf.einsum(
+      "ij,ij->i", batch_probs, onehot_targets, name="chosen_probs")
+  avg_log_likelihood = tf.reduce_mean(tf.log(chosen_probs))
+  return avg_log_likelihood, tf.constant(1.0)
+
+
 def padded_sequence_accuracy(predictions,
                              labels,
                              weights_fn=common_layers.weights_nonzero):
@@ -195,6 +243,41 @@ def padded_sequence_accuracy(predictions,
     axis = list(range(1, len(outputs.get_shape())))
     correct_seq = 1.0 - tf.minimum(1.0, tf.reduce_sum(not_correct, axis=axis))
     return correct_seq, tf.constant(1.0)
+
+
+def prefix_accuracy(predictions,
+                    labels,
+                    weights_fn=common_layers.weights_nonzero):
+  """Average # of correct tokens at start of sequences, ignoring padding 0s.
+
+  See section 4.3 of Learning to Transduce with Unbounded Memory,
+  Grefenstette et al., 2015.
+
+  Args:
+    predictions: Tensor of shape [`batch_size`, `length`, 1, `num_classes`] and
+        type tf.float32 representing the logits, 0-padded.
+    labels: Tensor of shape [`batch_size`, `length`, 1, 1] and type tf.int32
+        representing the labels of same length as logits and 0-padded.
+    weights_fn: ignored. The weights returned are the total length of the ground
+        truth labels, excluding 0-paddings.
+
+  Returns:
+    (prefix accuracy, 1.0)
+
+  Raises:
+    ValueError: if weights_fn is not common_layers.weights_nonzero.
+  """
+  if weights_fn is not common_layers.weights_nonzero:
+    raise ValueError("Only weights_nonzero can be used for this metric.")
+
+  predictions = tf.to_int32(tf.squeeze(tf.argmax(predictions, axis=-1), axis=2))
+  labels = tf.squeeze(labels, axis=(2, 3))
+  seq_len = tf.reduce_sum(
+      tf.cast(tf.not_equal(labels, tf.constant(0)), dtype=tf.float32), axis=1)
+  matching_elements = tf.equal(labels, predictions)
+  prefix_len = tf.reduce_sum(
+      tf.cumprod(tf.cast(matching_elements, tf.float32), axis=1), axis=1)
+  return tf.reduce_mean(prefix_len / seq_len), tf.constant(1.0)
 
 
 def sequence_edit_distance(predictions,
@@ -451,6 +534,24 @@ def sigmoid_accuracy_one_hot(logits, labels, weights_fn=None):
     return accuracy, tf.constant(1.0)
 
 
+def sigmoid_accuracy(logits, labels, weights_fn=None):
+  """Calculate accuracy for a set, given integer labels and logits.
+
+  Args:
+    logits: Tensor of size [batch-size, o=1, p=1, num-classes]
+    labels: Tensor of size [batch-size, o=1, p=1]
+    weights_fn: Function that takes in labels and weighs examples (unused)
+  Returns:
+    accuracy (scalar), weights
+  """
+  with tf.variable_scope("sigmoid_accuracy", values=[logits, labels]):
+    del weights_fn
+    predictions = tf.nn.sigmoid(logits)
+    predictions = tf.argmax(predictions, -1)
+    _, accuracy = tf.metrics.accuracy(labels=labels, predictions=predictions)
+    return accuracy, tf.constant(1.0)
+
+
 def sigmoid_precision_one_hot(logits, labels, weights_fn=None):
   """Calculate precision for a set, given one-hot labels and logits.
 
@@ -681,6 +782,9 @@ def create_eager_metrics_internal(metric_fns,
     (accum_fn(predictions, targets) => None,
      result_fn() => dict<str metric_name, float avg_val>
   """
+
+  from tensorflow.contrib.eager.python import tfe  # pylint: disable=g-import-not-at-top
+
   tfe_metrics = {}
 
   for name in metric_fns:
@@ -773,8 +877,8 @@ def pearson_correlation_coefficient(predictions, labels, weights_fn=None):
     The pearson correlation coefficient.
   """
   del weights_fn
-  _, pearson = tf.contrib.metrics.streaming_pearson_correlation(predictions,
-                                                                labels)
+  _, pearson = contrib.metrics().streaming_pearson_correlation(
+      predictions, labels)
   return pearson, tf.constant(1.0)
 
 # Metrics are functions that take predictions and labels and return
@@ -792,23 +896,27 @@ METRICS_FNS = {
     Metrics.APPROX_BLEU: bleu_hook.bleu_score,
     Metrics.APPROX_SARI: sari_hook.sari_score,
     Metrics.RMSE: padded_rmse,
+    Metrics.UNPADDED_MSE: unpadded_mse,
     Metrics.LOG_POISSON: padded_log_poisson,
     Metrics.PEARSON: pearson_correlation_coefficient,
     Metrics.R2: padded_variance_explained,
     Metrics.ROUGE_2_F: rouge.rouge_2_fscore,
     Metrics.ROUGE_L_F: rouge.rouge_l_fscore,
     Metrics.EDIT_DISTANCE: sequence_edit_distance,
-    Metrics.WORD_ERROR_RATE: word_error_rate,
     Metrics.SOFTMAX_CROSS_ENTROPY_ONE_HOT: softmax_cross_entropy_one_hot,
+    Metrics.SIGMOID_ACCURACY: sigmoid_accuracy,
     Metrics.SIGMOID_ACCURACY_ONE_HOT: sigmoid_accuracy_one_hot,
     Metrics.SIGMOID_RECALL_ONE_HOT: sigmoid_recall_one_hot,
     Metrics.SIGMOID_PRECISION_ONE_HOT: sigmoid_precision_one_hot,
     Metrics.SIGMOID_CROSS_ENTROPY_ONE_HOT: sigmoid_cross_entropy_one_hot,
     Metrics.SET_PRECISION: set_precision,
     Metrics.SET_RECALL: set_recall,
+    Metrics.TWO_CLASS_ACCURACY: two_class_accuracy,
+    Metrics.TWO_CLASS_LOG_LIKELIHOOD: two_class_log_likelihood,
     Metrics.ROC_AUC: roc_auc,
     Metrics.IMAGE_SUMMARY: image_summary,
     Metrics.DMOL_PERPLEXITY: dmol_neg_log_perplexity,
     Metrics.ABS_ERR: abs_error,
     Metrics.IMAGE_RMSE: image_rmse,
+    Metrics.WORD_ERROR_RATE: word_error_rate,
 }

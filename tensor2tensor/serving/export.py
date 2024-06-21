@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,7 +25,8 @@ from tensor2tensor.utils import t2t_model
 from tensor2tensor.utils import trainer_lib
 from tensor2tensor.utils import usr_dir
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
 import tensorflow_hub as hub
 
 FLAGS = tf.flags.FLAGS
@@ -43,17 +44,36 @@ tf.flags.DEFINE_string(
     "If None, we will use the latest checkpoint stored in the directory "
     "specified by --output_dir")
 
+tf.flags.DEFINE_bool(
+    "as_text", True,
+    "Whether to write the SavedModel proto in text format. Defaults to `False`."
+)
+
 
 def _get_hparams_path():
   """Get hyper-parameters file path."""
   hparams_path = None
   if FLAGS.output_dir:
     hparams_path = os.path.join(FLAGS.output_dir, "hparams.json")
-  else:
+  elif FLAGS.checkpoint_path:  # Infer hparams.json from checkpoint path
+    hparams_path = os.path.join(
+        os.path.dirname(FLAGS.checkpoint_path), "hparams.json")
+
+  # Check if hparams_path really exists
+  if hparams_path:
+    if tf.gfile.Exists(hparams_path):
+      tf.logging.info("hparams file %s exists", hparams_path)
+    else:
+      tf.logging.info("hparams file %s does not exist", hparams_path)
+      hparams_path = None
+
+  # Can't find hparams_path
+  if not hparams_path:
     tf.logging.warning(
-        "--output_dir not specified. Hyper-parameters will be infered from"
-        "--hparams_set and --hparams only. These may not match training time"
-        "hyper-parameters.")
+        "--output_dir not specified or file hparams.json does not exists. "
+        "Hyper-parameters will be infered from --hparams_set and "
+        "--hparams only. These may not match training time hyper-parameters.")
+
   return hparams_path
 
 
@@ -63,7 +83,9 @@ def create_estimator(run_config, hparams):
       hparams,
       run_config,
       decode_hparams=decoding.decode_hparams(FLAGS.decode_hparams),
-      use_tpu=FLAGS.use_tpu)
+      use_tpu=FLAGS.use_tpu,
+      export_saved_model_api_version=FLAGS.export_saved_model_api_version,
+      use_guarantee_const_getter=FLAGS.use_guarantee_const_getter)
 
 
 def create_hparams():
@@ -134,7 +156,7 @@ def export_as_tfhub_module(model_name,
     # we must do a copy of the features, as the model_fn can add additional
     # entries there (like hyperparameter settings etc).
     original_features = features.copy()
-    spec = model_fn(features, labels=None, mode=tf.estimator.ModeKeys.PREDICT)
+    spec = model_fn(features, labels=None, mode=tf_estimator.ModeKeys.PREDICT)
 
     hub.add_signature(
         inputs=original_features,
@@ -183,10 +205,10 @@ def main(_):
 
   estimator = create_estimator(run_config, hparams)
 
-  exporter = tf.estimator.FinalExporter(
+  exporter = tf_estimator.FinalExporter(
       "exporter",
       lambda: problem.serving_input_fn(hparams, decode_hparams, FLAGS.use_tpu),
-      as_text=True)
+      as_text=FLAGS.as_text)
 
   exporter.export(
       estimator,

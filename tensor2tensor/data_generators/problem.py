@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,19 +26,27 @@ import six
 
 from tensor2tensor.data_generators import generator_utils
 from tensor2tensor.data_generators import text_encoder
+from tensor2tensor.utils import contrib
 from tensor2tensor.utils import data_reader
+from tensor2tensor.utils import hparam
 from tensor2tensor.utils import metrics
 from tensor2tensor.utils import mlperf_log
-from tensor2tensor.utils.hparam import HParams
 
-import tensorflow as tf
-from tensorflow.contrib.tpu.python.tpu import tpu_config
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
+# pylint: disable=g-import-not-at-top
+try:
+  from tensorflow.contrib.tpu.python.tpu import tpu_config
+except ImportError:
+  # TF 2.0 doesn't ship with contrib.
+  tpu_config = None
+# pylint: enable=g-import-not-at-top
 
 
 
 class DatasetSplit(object):
-  TRAIN = tf.estimator.ModeKeys.TRAIN
-  EVAL = tf.estimator.ModeKeys.EVAL
+  TRAIN = tf_estimator.ModeKeys.TRAIN
+  EVAL = tf_estimator.ModeKeys.EVAL
   TEST = "test"
 
 
@@ -131,7 +139,7 @@ class TaskID(object):
 
 
 def default_model_hparams():
-  return HParams(
+  return hparam.HParams(
       max_input_seq_length=0,
       max_target_seq_length=0,
       prepend_mode="none",
@@ -141,15 +149,15 @@ def default_model_hparams():
 
 def preprocess_example_common(example, mode, hparams):
   """Preprocessing steps common to all models."""
-  if hparams.max_input_seq_length > 0:
+  if "inputs" in example and hparams.max_input_seq_length > 0:
     example["inputs"] = example["inputs"][:hparams.max_input_seq_length]
   if hparams.prepend_mode != "none":
-    if mode == tf.estimator.ModeKeys.PREDICT:
+    if mode == tf_estimator.ModeKeys.PREDICT:
       example["partial_targets"] = tf.concat([example["inputs"], [0]], 0)
     else:
       example["targets"] = tf.concat(
           [example["inputs"], [0], example["targets"]], 0)
-  if hparams.max_target_seq_length > 0:
+  if "targets" in example and hparams.max_target_seq_length > 0:
     example["targets"] = example["targets"][:hparams.max_target_seq_length]
   if hparams.split_to_length:
     new_example = {}
@@ -338,7 +346,7 @@ class Problem(object):
   def preprocess_example(self, example, mode, hparams):
     """Runtime preprocessing.
 
-    Return a dict or a tf.Data.Datset.from_tensor_slices (if you want each
+    Return a dict or a tf.data.Dataset.from_tensor_slices (if you want each
     example to turn into multiple).
 
     Args:
@@ -357,17 +365,21 @@ class Problem(object):
         metrics.Metrics.ACC_PER_SEQ, metrics.Metrics.NEG_LOG_PERPLEXITY
     ]
 
+  @property
+  def all_metrics_fns(self):
+    return metrics.METRICS_FNS
+
   def eval_metric_fns(self, model_hparams):
     del model_hparams
     metric_names = self.eval_metrics()
-    if not all([m in metrics.METRICS_FNS for m in metric_names]):
+    if not all([m in self.all_metrics_fns for m in metric_names]):
       error_str = ("Unrecognized metric. Problem %s specified metrics "
                    "%s. Recognized metrics are %s.")
       raise ValueError(error_str % (self.name,
                                     metric_names,
-                                    list(metrics.METRICS_FNS.keys())))
+                                    list(self.all_metrics_fns.keys())))
     return {
-        metric_name: metrics.METRICS_FNS[metric_name]
+        metric_name: self.all_metrics_fns[metric_name]
         for metric_name in metric_names
     }
 
@@ -388,10 +400,11 @@ class Problem(object):
   # END SUBCLASS INTERFACE
   # ============================================================================
 
+  @tf.autograph.experimental.do_not_convert()
   def preprocess(self, dataset, mode, hparams, interleave=True):
     """Runtime preprocessing on the whole dataset.
 
-    Return a tf.data.Datset -- the preprocessed version of the given one.
+    Return a tf.data.Dataset -- the preprocessed version of the given one.
     By default this function calls preprocess_example.
 
     Args:
@@ -472,7 +485,7 @@ class Problem(object):
     shard_str = "-%05d" % shard if shard is not None else ""
     if mode == DatasetSplit.TRAIN:
       suffix = "train"
-    elif mode in [DatasetSplit.EVAL, tf.estimator.ModeKeys.PREDICT]:
+    elif mode in [DatasetSplit.EVAL, tf_estimator.ModeKeys.PREDICT]:
       suffix = "dev"
     else:
       assert mode == DatasetSplit.TEST
@@ -576,6 +589,7 @@ class Problem(object):
     self.maybe_copy_features(example)
     return example
 
+  @tf.autograph.experimental.do_not_convert()
   def dataset(self,
               mode,
               data_dir=None,
@@ -620,7 +634,7 @@ class Problem(object):
     Raises:
       ValueError: if num_partitions is greater than the number of data files.
     """
-    is_training = mode == tf.estimator.ModeKeys.TRAIN
+    is_training = mode == tf_estimator.ModeKeys.TRAIN
     shuffle_files = shuffle_files or shuffle_files is None and is_training
 
     dataset_split = dataset_split or mode
@@ -638,8 +652,8 @@ class Problem(object):
 
     data_filepattern = self.filepattern(data_dir, dataset_split, shard=shard)
     tf.logging.info("Reading data files from %s", data_filepattern)
-    data_files = sorted(tf.contrib.slim.parallel_reader.get_data_files(
-        data_filepattern))
+    data_files = sorted(
+        contrib.slim().parallel_reader.get_data_files(data_filepattern))
 
     # Functions used in dataset transforms below. `filenames` can be either a
     # `tf.string` tensor or `tf.data.Dataset` containing one or more filenames.
@@ -699,13 +713,24 @@ class Problem(object):
     # Necessary to rejoin examples in the correct order with the Cloud ML Engine
     # batch prediction API.
     data_fields["batch_prediction_key"] = tf.FixedLenFeature([1], tf.int64, 0)
-    if data_items_to_decoders is None:
-      data_items_to_decoders = {
-          field: tf.contrib.slim.tfexample_decoder.Tensor(field)
-          for field in data_fields
-      }
 
-    decoder = tf.contrib.slim.tfexample_decoder.TFExampleDecoder(
+    if getattr(self._hparams, "sampling_method", "") == "random_per_example":
+      data_fields["sampling_temp"] = tf.FixedLenFeature(
+          [1], tf.float32, getattr(self._hparams, "sampling_temp", 1.0))
+      data_fields["sampling_keep_top_k"] = tf.FixedLenFeature(
+          [1], tf.int64, getattr(self._hparams, "sampling_keep_top_k", -1))
+
+    if data_items_to_decoders is None:
+      data_items_to_decoders = {}
+      for field in data_fields:
+        if data_fields[field].dtype is tf.string:
+          default_value = b""
+        else:
+          default_value = 0
+        data_items_to_decoders[field] = contrib.slim().tfexample_decoder.Tensor(
+            field, default_value=default_value)
+
+    decoder = contrib.slim().tfexample_decoder.TFExampleDecoder(
         data_fields, data_items_to_decoders)
 
     decode_items = list(sorted(data_items_to_decoders))
@@ -801,7 +826,7 @@ class Problem(object):
       partition_id: an integer
       num_partitions: an integer
     """
-    if mode != tf.estimator.ModeKeys.TRAIN or not hasattr(config, "tpu_config"):
+    if mode != tf_estimator.ModeKeys.TRAIN or not hasattr(config, "tpu_config"):
       # Reset in the case when using TPU but alternating TRAIN and EVAL.
       self._next_partition_id = 0
       return 0, 1
@@ -851,7 +876,7 @@ class Problem(object):
       (features_dict<str name, Tensor feature>, Tensor targets)
     """
     partition_id, num_partitions = self._dataset_partition(mode, config, params)
-    is_training = mode == tf.estimator.ModeKeys.TRAIN
+    is_training = mode == tf_estimator.ModeKeys.TRAIN
     if config and config.use_tpu:
       num_threads = 64
     else:
@@ -894,7 +919,8 @@ class Problem(object):
 
   def serving_input_fn(self, hparams, decode_hparams=None, use_tpu=False):
     """Input fn for serving export, starting from serialized example."""
-    mode = tf.estimator.ModeKeys.PREDICT
+    self._hparams = hparams
+    mode = tf_estimator.ModeKeys.PREDICT
     serialized_example = tf.placeholder(
         dtype=tf.string, shape=[None], name="serialized_example")
     dataset = tf.data.Dataset.from_tensor_slices(serialized_example)
@@ -922,7 +948,7 @@ class Problem(object):
     if self.has_inputs:
       features.pop("targets", None)
 
-    return tf.estimator.export.ServingInputReceiver(
+    return tf_estimator.export.ServingInputReceiver(
         features=features, receiver_tensors=serialized_example)
 
 
@@ -965,12 +991,17 @@ def _reverse_problem_hparams(p_hparams):
   # In the future, remove need for this behavior.
   reversed_modality = {}
   for feature_name in p.modality:
-    reversed_feature_name = feature_name.replace("target", "input")
-    if "target" in feature_name and reversed_feature_name in p.modality:
-      reversed_modality[feature_name] = p.modality[reversed_feature_name]
-      reversed_modality[reversed_feature_name] = p.modality[feature_name]
-    else:
+    # Copy feature as-is.
+    if "target" not in feature_name and "input" not in feature_name:
       reversed_modality[feature_name] = p.modality[feature_name]
+    else:
+      # Change "target" to "input" and vice-versa for this feature.
+      if "target" in feature_name:
+        reversed_feature_name = feature_name.replace("target", "input")
+      else:
+        assert "input" in feature_name, feature_name
+        reversed_feature_name = feature_name.replace("input", "target")
+      reversed_modality[reversed_feature_name] = p.modality[feature_name]
 
   p.modality = reversed_modality
 
@@ -981,8 +1012,6 @@ def _reverse_problem_hparams(p_hparams):
     if "target" in feature_name and reversed_feature_name in p.vocab_size:
       reversed_vocab_size[feature_name] = p.vocab_size[reversed_feature_name]
       reversed_vocab_size[reversed_feature_name] = p.vocab_size[feature_name]
-    else:
-      reversed_vocab_size[feature_name] = p.vocab_size[feature_name]
 
   p.vocab_size = reversed_vocab_size
 
@@ -1012,7 +1041,7 @@ def _reverse_problem_hparams(p_hparams):
 
 def _default_hparams():
   """A set of basic model hyperparameters."""
-  return HParams(
+  return hparam.HParams(
       # Use this parameter to get comparable perplexity numbers with different
       # tokenizations.  This value should be set to the ratio of the number of
       # tokens in the test set according to the tokenization used to the number

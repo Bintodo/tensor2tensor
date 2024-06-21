@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,7 +25,8 @@ import numpy as np
 from tensor2tensor.data_generators import problem_hparams
 from tensor2tensor.models.research import universal_transformer
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
 
 BATCH_SIZE = 3
 INPUT_LENGTH = 5
@@ -36,7 +37,7 @@ VOCAB_SIZE = 10
 class UniversalTransformerTest(tf.test.TestCase):
 
   def get_model(self,
-                hparams, mode=tf.estimator.ModeKeys.TRAIN, has_input=True):
+                hparams, mode=tf_estimator.ModeKeys.TRAIN, has_input=True):
     hparams.hidden_size = 8
     hparams.filter_size = 32
     hparams.num_heads = 1

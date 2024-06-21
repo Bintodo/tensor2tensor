@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -31,7 +31,7 @@ from tensor2tensor.data_generators import text_encoder
 from tensor2tensor.data_generators import text_problems
 from tensor2tensor.utils import registry
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 
 def _build_vocab(filename, vocab_dir, vocab_name):
@@ -191,3 +191,13 @@ class LanguagemodelWikitext103L4k(LanguagemodelWikitext103):
   def sequence_length(self):
     """Length of each example (in tokens)."""
     return 4096
+
+
+@registry.register_problem
+class LanguagemodelWikitext103L16k(LanguagemodelWikitext103L4k):
+  """Wikitext-103, token-level, with examples up to 16,384 tokens long."""
+
+  @property
+  def sequence_length(self):
+    """Length of each example (in tokens)."""
+    return 16384

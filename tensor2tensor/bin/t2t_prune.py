@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -39,7 +39,8 @@ from tensor2tensor.utils import t2t_model
 from tensor2tensor.utils import trainer_lib
 from tensor2tensor.utils import usr_dir
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
 
 flags = tf.flags
 FLAGS = flags.FLAGS
@@ -79,7 +80,7 @@ def main(argv):
 
   # add "_rev" as a hack to avoid image standardization
   problem = registry.problem(FLAGS.problem)
-  input_fn = problem.make_estimator_input_fn(tf.estimator.ModeKeys.EVAL,
+  input_fn = problem.make_estimator_input_fn(tf_estimator.ModeKeys.EVAL,
                                              hparams)
   dataset = input_fn(params, config).repeat()
   features, labels = dataset.make_one_shot_iterator().get_next()
@@ -91,7 +92,7 @@ def main(argv):
   spec = model_fn(
       features,
       labels,
-      tf.estimator.ModeKeys.EVAL,
+      tf_estimator.ModeKeys.EVAL,
       params=hparams,
       config=config)
 

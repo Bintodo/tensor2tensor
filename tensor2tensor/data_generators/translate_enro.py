@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -33,6 +33,10 @@ _ENRO_TRAIN_DATASETS = [
         "http://www.statmt.org/europarl/v7/ro-en.tgz",
         ("europarl-v7.ro-en.en", "europarl-v7.ro-en.ro")
     ],
+    [
+        "http://opus.nlpl.eu/download.php?f=SETIMES/v2/moses/en-ro.txt.zip",
+        ("SETIMES.en-ro.en", "SETIMES.en-ro.ro")
+    ]
 ]
 _ENRO_TEST_DATASETS = [
     [

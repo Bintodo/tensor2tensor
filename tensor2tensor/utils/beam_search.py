@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ import math
 import numpy as np
 
 from tensor2tensor.layers import common_layers
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 from tensorflow.python.ops import inplace_ops
 from tensorflow.python.util import nest
@@ -724,8 +724,9 @@ def beam_search(symbols_to_logits_fn,
     return (i + 1, alive_seq, alive_log_probs, finished_seq, finished_scores,
             finished_flags, states)
 
-  def _is_finished(i, unused_alive_seq, alive_log_probs, unused_finished_seq,
-                   finished_scores, unused_finished_in_finished, unused_states):
+  def _is_not_finished(i, unused_alive_seq, alive_log_probs,
+                       unused_finished_seq, finished_scores,
+                       unused_finished_in_finished, unused_states):
     """Checking termination condition.
 
     We terminate when we decoded up to decode_length or the lowest scoring item
@@ -781,7 +782,7 @@ def beam_search(symbols_to_logits_fn,
     state_struc = nest.map_structure(get_state_shape_invariants, states)
   (_, alive_seq, alive_log_probs, finished_seq, finished_scores,
    finished_flags, states) = tf.while_loop(
-       _is_finished,
+       _is_not_finished,
        inner_loop, [
            tf.constant(0), alive_seq, alive_log_probs, finished_seq,
            finished_scores, finished_flags, states

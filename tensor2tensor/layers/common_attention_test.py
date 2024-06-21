@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,19 +19,40 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import math
+
 from absl.testing import parameterized
 import kfac
 import numpy as np
-
 from tensor2tensor.layers import common_attention
 from tensor2tensor.layers import common_layers
+from tensor2tensor.utils import contrib
 from tensor2tensor.utils import test_utils
 
-import tensorflow as tf
-tf.compat.v1.enable_eager_execution()
+import tensorflow.compat.v1 as tf
+
+
+tfe = contrib.tfe()
+# from tensorflow.contrib.eager.python import tfe as tfe
+tf.enable_eager_execution()
 
 
 class CommonAttentionTest(parameterized.TestCase, tf.test.TestCase):
+
+  @test_utils.run_in_graph_and_eager_modes()
+  def testAttentionBiasLocal(self):
+    length = 5
+    bias = common_attention.attention_bias_local(length, 0, 0)
+    # For length = 5
+    # [[[[-0.e+00 -1.e+09 -1.e+09 -1.e+09 -1.e+09]
+    #    [-1.e+09 -0.e+00 -1.e+09 -1.e+09 -1.e+09]
+    #    [-1.e+09 -1.e+09 -0.e+00 -1.e+09 -1.e+09]
+    #    [-1.e+09 -1.e+09 -1.e+09 -0.e+00 -1.e+09]
+    #    [-1.e+09 -1.e+09 -1.e+09 -1.e+09 -0.e+00]]]]
+    res = self.evaluate(bias)
+    expected_res = -1e9 * np.ones((length, length)) - -1e9 * np.identity(length)
+    expected_res = np.reshape(expected_res, (1, 1, length, length))
+    self.assertAllClose(res, expected_res)
 
   @test_utils.run_in_graph_and_eager_modes()
   def testAddPositionalEmbedding(self):
@@ -43,6 +64,33 @@ class CommonAttentionTest(parameterized.TestCase, tf.test.TestCase):
     self.evaluate(tf.global_variables_initializer())
     res = self.evaluate(y)
     self.assertEqual(res.shape, (5, 3, 12))
+
+  @parameterized.named_parameters(
+      ("hard_top_k", 0.0),
+      ("sampled_top_k_default", 1.0),
+      ("sampled_top_k_2", 2.0),
+  )
+  @test_utils.run_in_graph_and_eager_modes()
+  def testHardenAttentionWeights(self, gumbel_noise_weight):
+    x = np.random.rand(5, 3, 12)
+    y = common_attention.harden_attention_weights(
+        tf.nn.softmax(tf.constant(x, dtype=tf.float32)), 3, gumbel_noise_weight)
+    res = self.evaluate(y)
+    self.assertEqual(res.shape, (5, 3, 12))
+
+  @parameterized.named_parameters(
+      ("hard_top_k", -0.5),
+      ("sampled_top_k", 0.5),
+  )
+  @test_utils.run_in_graph_and_eager_modes()
+  def testHardenAttentionAllZeros(self, gumbel_noise_weight):
+    """Check if the hardening code does not divide by zero for all zeros."""
+    x = np.zeros((5, 3, 12), dtype=np.float32)
+    y = common_attention.harden_attention_weights(
+        tf.constant(x, dtype=tf.float32), 3, gumbel_noise_weight)
+    res = self.evaluate(y)
+    if gumbel_noise_weight <= 0.0:
+      self.assertAllClose(res, x)
 
   @parameterized.parameters(
       {"input_shape": (5, 3, 12)},
@@ -61,6 +109,69 @@ class CommonAttentionTest(parameterized.TestCase, tf.test.TestCase):
     self.assertEqual(res.shape, input_shape)
 
   @test_utils.run_in_graph_and_eager_modes()
+  def testAddTimingSignalsGivenPositions(self):
+    x_positions = tf.expand_dims(
+        tf.constant([0, 1, 2, 3], dtype=tf.float32), axis=0)
+    y_positions = tf.expand_dims(
+        tf.constant([4, 5, 6, 7], dtype=tf.float32), axis=0)
+    x = tf.zeros([1, 4, 8], dtype=tf.float32)
+    self.assertAllClose(
+        common_attention.add_timing_signals_given_positions(
+            x, [x_positions, y_positions]),
+        tf.constant([[
+            [
+                math.sin(0),
+                math.sin(0 * 1e-4),
+                math.cos(0),
+                math.cos(0 * 1e-4),
+                math.sin(4),
+                math.sin(4 * 1e-4),
+                math.cos(4),
+                math.cos(4 * 1e-4)
+            ],
+            [
+                math.sin(1),
+                math.sin(1 * 1e-4),
+                math.cos(1),
+                math.cos(1 * 1e-4),
+                math.sin(5),
+                math.sin(5 * 1e-4),
+                math.cos(5),
+                math.cos(5 * 1e-4)
+            ],
+            [
+                math.sin(2),
+                math.sin(2 * 1e-4),
+                math.cos(2),
+                math.cos(2 * 1e-4),
+                math.sin(6),
+                math.sin(6 * 1e-4),
+                math.cos(6),
+                math.cos(6 * 1e-4)
+            ],
+            [
+                math.sin(3),
+                math.sin(3 * 1e-4),
+                math.cos(3),
+                math.cos(3 * 1e-4),
+                math.sin(7),
+                math.sin(7 * 1e-4),
+                math.cos(7),
+                math.cos(7 * 1e-4)
+            ],
+        ]]))
+
+  @test_utils.run_in_graph_and_eager_modes()
+  def testAddTimingSignalsGivenPositionsEquivalent(self):
+    x = tf.zeros([1, 10, 128], dtype=tf.float32)
+    positions = tf.expand_dims(tf.range(0, 10, dtype=tf.float32), axis=0)
+    # The method add_timing_signal_1d_given_position could be replaced by
+    # add_timing_signals_given_positions:
+    tf.assert_equal(
+        common_attention.add_timing_signal_1d_given_position(x, positions),
+        common_attention.add_timing_signals_given_positions(x, [positions]))
+
+  @test_utils.run_in_graph_and_eager_modes()
   def testDotProductAttention(self):
     x = np.random.rand(5, 7, 12, 32)
     y = np.random.rand(5, 7, 12, 32)
@@ -70,6 +181,291 @@ class CommonAttentionTest(parameterized.TestCase, tf.test.TestCase):
         tf.constant(y, dtype=tf.float32), None)
     res = self.evaluate(a)
     self.assertEqual(res.shape, (5, 7, 12, 32))
+
+  @parameterized.parameters(
+      ([3, 10, 64], 4),
+      ([3, 10, 20, 64], 2),
+      ([3, 10, 20, 30, 64], 4),
+  )
+  def testSplitHeadsND(self, shape, num_heads):
+    t = tf.zeros(shape)
+    h = common_attention.split_heads_nd(t, num_heads)
+    res = self.evaluate(h)
+    self.assertEqual(
+        res.shape,
+        tuple(shape[:1] + [num_heads] + shape[1:-1] + [shape[-1] // num_heads]))
+
+  @parameterized.parameters(
+      ([3, 4, 10, 64],),
+      ([3, 2, 10, 20, 64],),
+      ([3, 4, 10, 20, 30, 64],),
+  )
+  def testCombineHeadsND(self, shape):
+    t = tf.zeros(shape)
+    h = common_attention.combine_heads_nd(t)
+    res = self.evaluate(h)
+    self.assertEqual(res.shape,
+                     tuple(shape[:1] + shape[2:-1] + [shape[-1] * shape[1]]))
+
+  @parameterized.parameters(
+      ([3, 4, 10, 64], (5,), (10,)),
+      ([3, 4, 10, 10, 64], (5, 5), (5, 5)),
+      ([3, 4, 10, 10, 10, 64], (5, 5, 5), (5, 5, 5)),
+  )
+  def testShapeMaskedLocalAttentionND(self, shape, query_shape, memory_flange):
+    q = k = v = tf.reshape(tf.range(np.prod(shape), dtype=tf.float32), shape)
+    val = common_attention.masked_local_attention_nd(q, k, v, query_shape,
+                                                     memory_flange)
+    res = self.evaluate(val)
+    self.assertEqual(res.shape, tuple(shape))
+
+  @test_utils.run_in_graph_and_eager_modes()
+  def testRightShiftBlockwiseND(self):
+    tensor = tf.convert_to_tensor(np.array([[
+        [[1], [2], [3], [4]],
+        [[5], [6], [7], [8]],
+        [[9], [10], [11], [12]],
+        [[13], [14], [15], [16]],
+    ]], dtype=np.float32))
+    val = common_attention.right_shift_blockwise_nd(tensor, (2, 2))
+    res = self.evaluate(val)
+    expected_val = np.array([[
+        [[0], [1], [6], [3]],
+        [[2], [5], [4], [7]],
+        [[8], [9], [14], [11]],
+        [[10], [13], [12], [15]],
+    ]], dtype=np.float32)
+    self.assertAllClose(expected_val, res)
+
+  @test_utils.run_in_graph_and_eager_modes()
+  def testContentMaskedLocalAttentionND(self):
+    def softmax(arr):
+      return np.exp(arr) / np.sum(np.exp(arr))
+
+    q = k = v = tf.convert_to_tensor(
+        np.array([[[
+            [[0.1], [0.1], [0.1], [0.1]],
+            [[0.1], [1.0], [1.0], [0.1]],
+            [[0.1], [1.0], [1.0], [0.1]],
+            [[0.1], [0.1], [0.1], [0.1]],
+        ]]], dtype=np.float32))
+    attn_weights = np.array([[[[softmax([-1e9, -1e9, -1e9, -1e9, 0.01]),
+                                softmax([-1e9, -1e9, -1e9, 0.01, 0.01]),
+                                softmax([-1e9, -1e9, -1e9, 0.01, 0.01]),
+                                softmax([-1e9, -1e9, -1e9, 0.01, 0.01])
+                               ],
+                               [softmax([-1e9, 0.01, 0.01, -1e9, 0.01]),
+                                softmax([0.1, 0.1, 0.1, 0.1, 1.0]),
+                                softmax([0.1, 0.1, 0.1, 1.0, 1.0]),
+                                softmax([0.01, 0.01, -1e9, 0.1, 0.01])
+                               ],
+                               [softmax([-1e9, 0.01, 0.1, -1e9, 0.01]),
+                                softmax([0.1, 1.0, 1.0, 0.1, 1.0]),
+                                softmax([1.0, 1.0, 0.1, 1.0, 1.0]),
+                                softmax([0.1, 0.01, -1e9, 0.1, 0.01])
+                               ],
+                               [softmax([-1e9, 0.01, 0.1, -1e9, 0.01]),
+                                softmax([0.01, 0.1, 0.1, 0.01, 0.01]),
+                                softmax([0.1, 0.1, 0.01, 0.01, 0.01]),
+                                softmax([0.1, 0.01, -1e9, 0.01, 0.01])
+                               ]]]])
+    blocked_v = np.array([[[[[0, 0, 0, 0, 0.1],
+                             [0, 0, 0, 0.1, 0.1],
+                             [0, 0, 0, 0.1, 0.1],
+                             [0, 0, 0, 0.1, 0.1]],
+                            [[0, 0.1, 0.1, 0, 0.1],
+                             [0.1, 0.1, 0.1, 0.1, 1],
+                             [0.1, 0.1, 0.1, 1, 1],
+                             [0.1, 0.1, 0, 1, 0.1]],
+                            [[0, 0.1, 1, 0, 0.1],
+                             [0.1, 1, 1, 0.1, 1],
+                             [1, 1, 0.1, 1, 1],
+                             [1, 0.1, 0, 1, 0.1]],
+                            [[0, 0.1, 1, 0, 0.1],
+                             [0.1, 1, 1, 0.1, 0.1],
+                             [1, 1, 0.1, 0.1, 0.1],
+                             [1, 0.1, 0, 0.1, 0.1]]]]])
+    expected_val = np.expand_dims(
+        np.sum(attn_weights * blocked_v, axis=4), axis=-1)
+    val = common_attention.masked_local_attention_nd(q, k, v, (1, 1), (1, 1))
+    res = self.evaluate(val)
+    self.assertAllClose(expected_val, res)
+
+  @test_utils.run_in_graph_and_eager_modes()
+  def testSelectBlockForDecodeStep(self):
+    tensor = tf.reshape(
+        tf.range(2 * 6 * 6 * 4, dtype=tf.float32), [2, 6, 6, 4, 1])
+    block = common_attention.select_block_for_decode_step(tensor, 20, (2, 2))
+    expected_tensor = tensor[:, 0:1, 5:6, :, :]
+    expected_value = self.evaluate(expected_tensor)
+    res = self.evaluate(block)
+    self.assertAllClose(expected_value, res)
+
+  @parameterized.parameters(
+      ((2, 6, 4, 10),),
+      ((2, 6, 6, 4, 10),),
+      ((2, 6, 6, 6, 4, 10),),
+  )
+  def testFlattenBlocksND(self, shape):
+    tensor = tf.zeros(shape, dtype=tf.float32)
+    value, _ = common_attention.flatten_blocks_nd(tensor)
+    res = self.evaluate(value)
+    self.assertAllClose(res.shape,
+                        (shape[0], np.prod(shape[1:-2]), shape[-2], shape[-1]))
+
+  @parameterized.parameters(
+      ((5,),),
+      ((5, 10),),
+      ((5, 10, 15),),
+  )
+  def testUnflattenBlocksND(self, blocks_per_dim):
+    tensor = tf.zeros([2, np.prod(blocks_per_dim), 6, 10])
+    value = common_attention.unflatten_blocks_nd(tensor, blocks_per_dim)
+    res = self.evaluate(value)
+    self.assertAllClose(res.shape, (2,) + blocks_per_dim + (6, 10))
+
+  @test_utils.run_in_graph_and_eager_modes()
+  def testBreakIntoMemoryBlocksND(self):
+    tensor = tf.convert_to_tensor(
+        np.array([[
+            [[1], [2], [3], [4]],
+            [[5], [6], [7], [8]],
+            [[9], [10], [11], [12]],
+            [[13], [14], [15], [16]],
+        ]]))
+    value = common_attention.break_into_memory_blocks_nd(tensor,
+                                                         (2, 2),
+                                                         (2, 2),
+                                                         masked=True)
+    res = self.evaluate(value)
+    expected_value = np.array([[
+        [
+            [
+                [0], [0], [0], [0], [0], [0], [0], [0], [0], [0], [0], [0],
+                [0], [0], [0], [0], [1], [2], [5], [6], [3], [4], [7], [8]
+            ],
+            [
+                [0], [0], [0], [0], [0], [0], [0], [0], [0], [0], [0], [0],
+                [1], [2], [5], [6], [3], [4], [7], [8], [0], [0], [0], [0]
+            ]
+        ],
+        [
+            [
+                [0], [0], [0], [0], [1], [2], [5], [6], [3], [4], [7], [8], [0],
+                [0], [0], [0], [9], [10], [13], [14], [11], [12], [15], [16]
+            ],
+            [
+                [1], [2], [5], [6], [3], [4], [7], [8], [0], [0], [0], [0], [9],
+                [10], [13], [14], [11], [12], [15], [16], [0], [0], [0], [0]
+            ]
+        ]]])
+    self.assertAllClose(expected_value, res)
+
+  @test_utils.run_in_graph_and_eager_modes()
+  def testBreakIntoBlocksND(self):
+    tensor = tf.convert_to_tensor(
+        np.array([[
+            [[1], [2], [3], [4]],
+            [[5], [6], [7], [8]],
+            [[9], [10], [11], [12]],
+            [[13], [14], [15], [16]],
+        ]]))
+    value = common_attention.break_into_blocks_nd(tensor, (2, 2))
+    res = self.evaluate(value)
+    expected_value = np.array([[
+        [[[1], [2], [5], [6]], [[3], [4], [7], [8]]],
+        [[[9], [10], [13], [14]], [[11], [12], [15], [16]]]
+    ]])
+    self.assertAllClose(expected_value, res)
+
+  @test_utils.run_in_graph_and_eager_modes()
+  def testPutBackBlocksND(self):
+    tensor = tf.convert_to_tensor(
+        np.array([[
+            [[[1], [2], [5], [6]], [[3], [4], [7], [8]]],
+            [[[9], [10], [13], [14]], [[11], [12], [15], [16]]]
+        ]]))
+    value = common_attention.put_back_blocks_nd(tensor, (2, 2))
+    res = self.evaluate(value)
+    expected_value = np.array([[
+        [[1], [2], [3], [4]],
+        [[5], [6], [7], [8]],
+        [[9], [10], [11], [12]],
+        [[13], [14], [15], [16]],
+    ]])
+    self.assertAllClose(expected_value, res)
+
+  @parameterized.parameters(
+      ((2, 100, 5), (7,), (2, 105, 5)),
+      ((2, 100, 100, 5), (5, 7), (2, 100, 105, 5)),
+      ((2, 100, 100, 100, 5), (10, 20, 30), (2, 100, 100, 120, 5))
+  )
+  def testPadToMultipleND(self, tensor_shape, block_shape, expected_shape):
+    tensor = tf.zeros(tensor_shape)
+    value = common_attention.pad_to_multiple_nd(tensor, block_shape)
+    res = self.evaluate(value)
+    self.assertAllClose(res.shape, expected_shape)
+
+  @test_utils.run_in_graph_and_eager_modes()
+  def testCausalAttentionBiasND(self):
+    bias = common_attention.causal_attention_bias_nd((2, 2), (2, 2))
+    res = self.evaluate(bias)
+    expected_val = np.array([[[
+        [0] * 17 + [-1e9] * 7,
+        [0] * 18 + [-1e9] * 6,
+        [0] * 19 + [-1e9] * 5,
+        [0] * 20 + [-1e9] * 4,
+    ]]])
+    self.assertAllClose(expected_val, res)
+
+  @parameterized.parameters(
+      ((1, 64, 10), (80,), (80,)),
+      ((1, 64, 64, 10), (8, 8), (16, 16)),
+      ((1, 5, 64, 64, 10), (1, 8, 8), (1, 8, 8))
+  )
+  def testMultiheadAttentionND(self, tensor_shape, query_shape, memory_flange):
+    query_antecedent = tf.zeros(tensor_shape)
+    value = common_attention.multihead_attention_nd(
+        query_antecedent=query_antecedent,
+        memory_antecedent=None,
+        total_key_depth=256,
+        total_value_depth=256,
+        output_depth=256,
+        num_heads=4,
+        query_shape=query_shape,
+        memory_flange=memory_flange,
+        masked=True)
+    res = self.evaluate(value)
+    self.assertAllClose(res.shape, tensor_shape[:-1] + (256,))
+
+  @parameterized.parameters(
+      (15, (5,), (100,), (15,)),
+      (10, (2, 2), (4, 4), (3, 0)),
+      (25, (2, 2, 3), (10, 10, 12), (0, 0, 7))
+  )
+  def testDecodeStepToIndex(self, decode_step, query_shape, tensor_shape,
+                            expected_index):
+    res = common_attention.decode_step_to_index(decode_step, query_shape,
+                                                tensor_shape)
+    self.assertAllClose(res, expected_index)
+
+  @test_utils.run_in_graph_and_eager_modes()
+  def testGetItemAtDecodeStep(self):
+    tensor = tf.reshape(tf.range(25 * 25 * 4), [1, 4, 25, 25, 1])
+    value = common_attention.get_item_at_decode_step(tensor, 100, (2, 5, 5))
+    res = self.evaluate(value)
+    expected_value = np.array([[[[[10]]]]])
+    self.assertAllClose(expected_value, res)
+
+  @test_utils.run_in_graph_and_eager_modes()
+  def testPutItemAtDecodeStep(self):
+    tensor = tf.zeros([1, 1, 10, 10, 1])
+    item = tf.ones([1, 1, 1, 1, 1])
+    value = common_attention.put_item_in_decode_step(tensor, item, 32, (2, 2))
+    res = self.evaluate(value)
+    expected_val = np.zeros([1, 1, 10, 10, 1])
+    expected_val[0, 0, 2, 6, 0] = 1
+    self.assertAllClose(expected_val, res)
 
   @parameterized.named_parameters(
       ("", 1, 1, 8, 4, 1, 2),
@@ -541,7 +937,7 @@ class CommonAttentionTest(parameterized.TestCase, tf.test.TestCase):
     res = self.evaluate(a)
     self.assertEqual(res.shape, (5, 7, 12, 32))
 
-  @tf.contrib.eager.run_test_in_graph_and_eager_modes()
+  @tfe.run_test_in_graph_and_eager_modes()
   def testExtractblocks(self):
 
     batch_size = 1
@@ -595,7 +991,7 @@ class CommonAttentionTest(parameterized.TestCase, tf.test.TestCase):
                                                  memory_w_index]
     return out
 
-  @tf.contrib.eager.run_test_in_graph_and_eager_modes()
+  @tfe.run_test_in_graph_and_eager_modes()
   def testGet2dLocalMemory(self):
     batch_size = 3
     num_heads = 3
@@ -629,7 +1025,7 @@ class CommonAttentionTest(parameterized.TestCase, tf.test.TestCase):
 
     self.assertAllClose(res, out)
 
-  @tf.contrib.eager.run_test_in_graph_and_eager_modes()
+  @tfe.run_test_in_graph_and_eager_modes()
   def testSplitAlongWidth(self):
     batch_size = 1
     num_heads = 3
@@ -673,7 +1069,7 @@ class CommonAttentionTest(parameterized.TestCase, tf.test.TestCase):
     self.assertAllClose(res_l, out_l)
     self.assertAllClose(res_r, out_r)
 
-  @tf.contrib.eager.run_test_in_graph_and_eager_modes()
+  @tfe.run_test_in_graph_and_eager_modes()
   def testGetLeftRightBlocks(self):
     batch_size = 1
     num_heads = 3
@@ -728,7 +1124,7 @@ class CommonAttentionTest(parameterized.TestCase, tf.test.TestCase):
     self.assertAllClose(res_l, out_l)
     self.assertAllClose(res_r, out_r)
 
-  @tf.contrib.eager.run_test_in_graph_and_eager_modes()
+  @tfe.run_test_in_graph_and_eager_modes()
   def testDotProductUnmaskedAttentionLocal2dTpu(self):
     batch_size = 1
     num_heads = 3
@@ -813,6 +1209,74 @@ class CommonAttentionTest(parameterized.TestCase, tf.test.TestCase):
                 att_output[b, h, h_block_index, w_block_index, inside_h_index,
                            inside_w_index])
     out = out[:, :, :height, :width, :]
+    self.assertAllClose(res, out)
+
+  @tfe.run_test_in_graph_and_eager_modes()
+  def testDotProductUnmaskedAttentionLocal2dTpuSimple(self):
+    batch_size = 1
+    num_heads = 3
+    height = 8
+    width = 12
+    total_depth = 15
+    num_h_blocks = 4
+    num_w_blocks = 6
+    depth = 5
+    query_shape = [2, 2]
+
+    x = np.random.rand(batch_size, height, width, total_depth)
+    a = (
+        common_attention.dot_product_unmasked_attention_local_2d_tpu_simple(
+            tf.constant(x, dtype=tf.float32),
+            None, total_depth, total_depth, num_heads,
+            query_shape=query_shape))
+    self.evaluate(tf.global_variables_initializer())
+    res, q, k, v = self.evaluate(a)
+    self.assertEqual(res.shape, (batch_size, height, width, total_depth))
+    # reshape q, k, v from batch, heads, height*width to batch, heads,
+    # num_h_blocks, num_w_blocks, query_shape[0], query_shape[1], depth
+    resh_shape = (batch_size, num_h_blocks, num_w_blocks,
+                  num_heads, query_shape[0], query_shape[1],
+                  depth)
+    resh = lambda l: np.reshape(l, resh_shape)
+    q, k, v = map(resh, [q, k, v])
+    trans = lambda l: np.transpose(l, (0, 3, 1, 2, 4, 5, 6))
+    q, k, v = map(trans, [q, k, v])
+    new_height = height + -height % query_shape[0]
+    new_width = width + -width % query_shape[1]
+    (queries, keys, values) = (q, k, v)
+    logits = np.matmul(
+        np.reshape(queries, (batch_size, num_heads,
+                             num_h_blocks, num_w_blocks,
+                             query_shape[0]*query_shape[1], depth)),
+        np.transpose(
+            np.reshape(keys, (batch_size, num_heads, num_h_blocks, num_w_blocks,
+                              query_shape[0]*query_shape[1], depth)),
+            (0, 1, 2, 3, 5, 4)))
+    # now to do a softmax across the logits
+    att = np.exp(logits) / np.sum(np.exp(logits), axis=-1, keepdims=True)
+    att_output = np.matmul(att, np.reshape(
+        values, (batch_size, num_heads, num_h_blocks, num_w_blocks,
+                 query_shape[0]*query_shape[1], depth)))
+    att_output = np.reshape(att_output,
+                            (batch_size, num_heads, num_h_blocks, num_w_blocks,
+                             query_shape[0], query_shape[1], depth))
+    # putting the attention results back into the right place
+    out = np.zeros((batch_size, num_heads, new_height, new_width, depth))
+    for b in range(batch_size):
+      for h in range(num_heads):
+        for x in range(new_height):
+          for y in range(new_width):
+            h_block_index = x//query_shape[0]
+            w_block_index = y//query_shape[1]
+            inside_h_index = x%query_shape[0]
+            inside_w_index = y%query_shape[1]
+            out[b, h, x, y] = (
+                att_output[b, h, h_block_index, w_block_index, inside_h_index,
+                           inside_w_index])
+    out = np.transpose(out, (0, 2, 3, 1, 4))
+    out = np.reshape(out, (batch_size, new_height, new_width, total_depth))
+    out = out[:, :height, :width, :]
+
     self.assertAllClose(res, out)
 
   def python_relative_att(self, q, k, v, batch, num_heads, height, width,
@@ -1126,6 +1590,56 @@ class CommonAttentionTest(parameterized.TestCase, tf.test.TestCase):
         layer_collection=layer_collection)
     self.assertLen(layer_collection.get_blocks(), 4)
 
+  @parameterized.named_parameters(
+      ("", 1, 1, 8, 4, 3),
+      ("dynamic_batch", None, 1, 8, 4, 2),
+      ("batches", 4, 3, 8, 4, 2),
+      ("block_length", 1, 1, 8, 4, 4),
+  )
+  def testDilatedAttention(self, batch, heads, length, depth_v, block_length):
+    if batch is None:
+      batch = tf.random_uniform([], minval=0, maxval=5, dtype=tf.int32)
+    q = tf.random_normal([batch, heads, length, depth_v])
+    k = tf.random_normal([batch, heads, length, depth_v])
+    v = tf.random_normal([batch, heads, length, depth_v])
+    output = common_attention.dilated_self_attention_1d(
+        q, k, v,
+        query_block_size=block_length,
+        memory_block_size=block_length,
+        gap_size=2,
+        num_memory_blocks=2)
+    if isinstance(batch, tf.Tensor):
+      batch, res = self.evaluate([batch, output])
+    else:
+      res = self.evaluate(output)
+
+    self.assertEqual(res.shape, (batch, heads, length, depth_v))
+
+  @parameterized.named_parameters(
+      ("", 1, 1, 8, 4, 3),
+      ("dynamic_batch", None, 1, 8, 4, 2),
+      ("batches", 4, 3, 8, 4, 2),
+      ("block_length", 1, 1, 8, 4, 4),
+  )
+  def testMaskedDilatedAttention(self, batch, heads, length, depth_v,
+                                 block_length):
+    if batch is None:
+      batch = tf.random_uniform([], minval=0, maxval=5, dtype=tf.int32)
+    q = tf.random_normal([batch, heads, length, depth_v])
+    k = tf.random_normal([batch, heads, length, depth_v])
+    v = tf.random_normal([batch, heads, length, depth_v])
+    output = common_attention.masked_dilated_self_attention_1d(
+        q, k, v,
+        query_block_size=block_length,
+        memory_block_size=block_length,
+        gap_size=2,
+        num_memory_blocks=2)
+    if isinstance(batch, tf.Tensor):
+      batch, res = self.evaluate([batch, output])
+    else:
+      res = self.evaluate(output)
+
+    self.assertEqual(res.shape, (batch, heads, length, depth_v))
+
 if __name__ == "__main__":
   tf.test.main()
-

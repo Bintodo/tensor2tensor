@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ from gym.spaces import Box
 from gym.spaces import Discrete
 
 import numpy as np
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 
 def box_space_spec(box_space, tf_dtype):
@@ -99,8 +99,8 @@ def cardinality(gym_space):
   """
 
   if (gym_space.dtype == np.float32) or (gym_space.dtype == np.float64):
-    tf.logging.error("Returning None for a float gym space's cardinality: ",
-                     gym_space)
+    tf.logging.warn("Returning None for a float gym space's cardinality: %s",
+                    gym_space)
     return None
 
   if isinstance(gym_space, Discrete):

@@ -1,3 +1,5 @@
+#include <memory>
+
 #include "third_party/py/tensor2tensor/data_generators/ops/subword_text_encoder.h"
 #include "third_party/tensorflow/core/framework/op_kernel.h"
 #include "third_party/tensorflow/core/framework/shape_inference.h"
@@ -14,6 +16,7 @@ using ::tensorflow::OpKernelContext;
 using ::tensorflow::Status;
 using ::tensorflow::Tensor;
 using ::tensorflow::TensorShape;
+using ::tensorflow::tstring;
 using ::tensorflow::shape_inference::InferenceContext;
 
 REGISTER_OP("SubwordTextEncoderEncode")
@@ -22,31 +25,31 @@ REGISTER_OP("SubwordTextEncoderEncode")
     .Attr("vocab_filename: string")
     .SetShapeFn([](InferenceContext* ctx) {
       ctx->set_output(0, ctx->Vector(ctx->UnknownDim()));
-      return Status::OK();
+      return tensorflow::Status();
     });
 
 class SubwordTextEncoderEncodeOp : public OpKernel {
  public:
   explicit SubwordTextEncoderEncodeOp(
       OpKernelConstruction* ctx) : OpKernel(ctx) {
-    string vocab_filename;
+    std::string vocab_filename;
     OP_REQUIRES_OK(ctx, ctx->GetAttr("vocab_filename", &vocab_filename));
-    encoder_ = absl::make_unique<SubwordTextEncoder>(vocab_filename);
+    encoder_ = std::make_unique<SubwordTextEncoder>(vocab_filename);
   }
 
   void Compute(OpKernelContext* ctx) override {
     // Get input string and deserialize into ArticleExample proto.
-    const string& s = ctx->input(0).scalar<string>()();
+    absl::string_view s = ctx->input(0).scalar<tstring>()();
 
     // Construct encoded output tensors.
     std::vector<int> encoded_ids;
     encoder_->Encode(s, &encoded_ids);
     Tensor* encoded;
     OP_REQUIRES_OK(
-        ctx,
-        ctx->allocate_output(0, TensorShape(
-            {static_cast<int64>(encoded_ids.size())}), &encoded));
-    auto encoded_vec = encoded->vec<int64>();
+        ctx, ctx->allocate_output(
+                 0, TensorShape({static_cast<int64_t>(encoded_ids.size())}),
+                 &encoded));
+    auto encoded_vec = encoded->vec<int64_t>();
     // TODO(noam): find someone who remembers c++ eigen and ask the proper way
     // to copy a std::Vector to an Eigen whatever-this-is
     for (int i = 0; i < encoded_ids.size(); i++) {

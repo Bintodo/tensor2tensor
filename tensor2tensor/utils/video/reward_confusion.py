@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -36,7 +36,8 @@ from tensor2tensor.utils import registry
 from tensor2tensor.utils import trainer_lib
 from tensor2tensor.utils import usr_dir
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
 
 flags = tf.flags
 FLAGS = flags.FLAGS
@@ -64,7 +65,7 @@ def main(_):
   # Iterating over dev/test partition of the data.
   # Change the data partition if necessary.
   dataset = registry.problem(FLAGS.problem).dataset(
-      tf.estimator.ModeKeys.PREDICT,
+      tf_estimator.ModeKeys.PREDICT,
       shuffle_files=False,
       hparams=hparams)
 
@@ -74,7 +75,7 @@ def main(_):
 
   # Creat model
   model_cls = registry.model(FLAGS.model)
-  model = model_cls(hparams, tf.estimator.ModeKeys.PREDICT)
+  model = model_cls(hparams, tf_estimator.ModeKeys.PREDICT)
   prediction_ops = model.infer(input_data)
 
   # Confusion Matrix

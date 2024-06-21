@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,9 +25,11 @@ import random
 import six
 from six.moves import range  # pylint: disable=redefined-builtin
 
+from tensor2tensor.utils import contrib
 from tensor2tensor.utils import mlperf_log
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
 
 
 def cast_ints_to_int32(features):
@@ -344,7 +346,7 @@ def input_fn(dataset,
   Returns:
     (features_dict<str name, Tensor feature>, Tensor targets)
   """
-  is_training = mode == tf.estimator.ModeKeys.TRAIN
+  is_training = mode == tf_estimator.ModeKeys.TRAIN
   if config and config.use_tpu:
     num_threads = 64
   else:
@@ -379,7 +381,7 @@ def input_fn(dataset,
     dataset = dataset.repeat()
 
   if is_training and skip_random_fraction_when_training:
-    data_files = tf.contrib.slim.parallel_reader.get_data_files(filepattern)
+    data_files = contrib.slim().parallel_reader.get_data_files(filepattern)
     #  In continuous_train_and_eval when switching between train and
     #  eval, this input_fn method gets called multiple times and it
     #  would give you the exact same samples from the last call
@@ -519,19 +521,52 @@ def input_fn(dataset,
     dataset = dataset.flat_map(split_on_length)
     dataset = dataset.filter(is_nonzero_chunk)
 
+    # The chunking data pipeline thus far creates batches of examples where all
+    # of the examples have the same chunk number. This can lead to periodic
+    # fluctuations in the loss; for example, when all examples in the batch have
+    # chunk number 0 the loss may be higher than midway through a sequence.
+    # Enabling split_targets_strided_training adjusts the data so that each
+    # batch includes examples at various points within a sequence.
+    if is_training and hparams.split_targets_strided_training:
+      # TODO(kitaev): make sure that shape inference works on GPU, not just TPU.
+      inferred_batch_size = dataset.output_shapes["targets"].as_list()[0]
+      if inferred_batch_size is None:
+        raise ValueError(
+            "Strided training is only implemented when the batch size can be "
+            "inferred statically, for example when training on TPU."
+        )
+      chunk_stride = inferred_batch_size * max(
+          1, max_chunks // inferred_batch_size) + 1
+
+      def collapse_nested_datasets(example):
+        """Converts a dataset of datasets to a dataset of tensor features."""
+        new_example = {}
+        for k, v in example.items():
+          v = tf.data.experimental.get_single_element(
+              v.batch(inferred_batch_size, drop_remainder=True))
+          new_example[k] = v
+        return tf.data.Dataset.from_tensor_slices(new_example)
+
+      dataset = dataset.unbatch()
+      dataset = dataset.window(inferred_batch_size, inferred_batch_size,
+                               chunk_stride)
+      dataset = dataset.flat_map(collapse_nested_datasets)
+      dataset = dataset.batch(inferred_batch_size, drop_remainder=True)
+
   def prepare_for_output(example):
     if not config or not config.use_tpu:
       _summarize_features(example, num_shards)
-    if mode == tf.estimator.ModeKeys.PREDICT:
+    if mode == tf_estimator.ModeKeys.PREDICT:
       example["infer_targets"] = example.pop("targets")
       return example
     else:
-      return example, example["targets"]
+      return example, example[hparams.get(
+          key="labels_feature_name", default="targets")]
 
   dataset = dataset.map(prepare_for_output, num_parallel_calls=num_threads)
   dataset = dataset.prefetch(2)
 
-  if mode == tf.estimator.ModeKeys.PREDICT:
+  if mode == tf_estimator.ModeKeys.PREDICT:
     # This is because of a bug in the Estimator that short-circuits prediction
     # if it doesn't see a QueueRunner. DummyQueueRunner implements the
     # minimal expected interface but does nothing.

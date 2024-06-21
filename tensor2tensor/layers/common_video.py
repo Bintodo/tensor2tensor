@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,13 +22,19 @@ from __future__ import print_function
 import numpy as np
 
 from tensor2tensor.layers import common_layers
-import tensorflow as tf
+from tensor2tensor.utils import contrib
+import tensorflow.compat.v1 as tf
 
-from tensorflow.python.distribute import summary_op_util as distribute_summary_op_util  # pylint: disable=g-direct-tensorflow-import
 from tensorflow.python.ops import summary_op_util  # pylint: disable=g-direct-tensorflow-import
 
-tfl = tf.layers
-tfcl = tf.contrib.layers
+# After tf-nightly 1.14.1.dev20190314 summary_op_util.skip_summary was extracted
+# out to the distribute module.
+try:
+  from tensorflow.python.distribute import summary_op_util as distribute_summary_op_util  # pylint: disable=g-direct-tensorflow-import,g-import-not-at-top
+except ImportError:
+  distribute_summary_op_util = summary_op_util
+
+tfl = common_layers.layers()
 
 
 def swap_time_and_batch_axes(inputs):
@@ -109,9 +115,8 @@ def conv_lstm_2d(inputs, state, output_channels,
   else:
     input_shape = spatial_dims + [input_channels]
 
-  cell = tf.contrib.rnn.ConvLSTMCell(
-      2, input_shape, output_channels,
-      [kernel_size, kernel_size], name=name)
+  cell = contrib.rnn().ConvLSTMCell(
+      2, input_shape, output_channels, [kernel_size, kernel_size], name=name)
   if state is None:
     state = cell.zero_state(batch_size, tf.float32)
   outputs, new_state = cell(inputs, state)
@@ -546,14 +551,14 @@ def conv_latent_tower(images, time_axis, latent_channels=1, min_logvar=-5,
     x = common_layers.make_even_size(x)
     x = tfl.conv2d(x, conv_size[0], [3, 3], strides=(2, 2),
                    padding="SAME", activation=tf.nn.relu, name="latent_conv1")
-    x = tfcl.layer_norm(x)
+    x = contrib.layers().layer_norm(x)
     if not small_mode:
       x = tfl.conv2d(x, conv_size[1], [3, 3], strides=(2, 2),
                      padding="SAME", activation=tf.nn.relu, name="latent_conv2")
-      x = tfcl.layer_norm(x)
+      x = contrib.layers().layer_norm(x)
     x = tfl.conv2d(x, conv_size[2], [3, 3], strides=(1, 1),
                    padding="SAME", activation=tf.nn.relu, name="latent_conv3")
-    x = tfcl.layer_norm(x)
+    x = contrib.layers().layer_norm(x)
 
     nc = latent_channels
     mean = tfl.conv2d(x, nc, [3, 3], strides=(2, 2),
@@ -783,6 +788,8 @@ class WholeVideoWriter(VideoWriter):
     (out, err) = [
         b"".join(chunks) for chunks in (self._out_chunks, self._err_chunks)
     ]
+    self.proc.stdout.close()
+    self.proc.stderr.close()
     if self.proc.returncode:
       err = "\n".join([" ".join(self.cmd), err.decode("utf8")])
       raise IOError(err)
@@ -813,7 +820,7 @@ class BatchWholeVideoWriter(VideoWriter):
     del batch_encoded_frame
     if self.writers is None:
       self.writers = [
-          WholeVideoWriter(
+          WholeVideoWriter(  # pylint: disable=g-complex-comprehension
               self.fps, self.path_template.format(i), self.file_format
           )
           for i in range(len(batch_frame))

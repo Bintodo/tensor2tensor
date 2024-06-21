@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -32,7 +32,8 @@ from tensor2tensor.layers import modalities
 from tensor2tensor.utils import registry
 from tensor2tensor.utils import t2t_model
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
 
 
 @registry.register_model
@@ -52,7 +53,7 @@ class Imagetransformer(t2t_model.T2TModel):
       raise ValueError("When using DMOL for the likelihood, bottom function "
                        " must be identity and num_channels must be 1.")
     if (not tf.get_variable_scope().reuse and
-        hparams.mode != tf.estimator.ModeKeys.PREDICT):
+        hparams.mode != tf_estimator.ModeKeys.PREDICT):
       tf.summary.image("targets", tf.to_float(targets), max_outputs=1)
 
     # Extra losses list if we want to use moe.

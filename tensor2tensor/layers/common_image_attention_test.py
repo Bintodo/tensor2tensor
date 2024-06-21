@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,9 +22,10 @@ from __future__ import print_function
 from absl.testing import parameterized
 from tensor2tensor.layers import common_hparams
 from tensor2tensor.layers import common_image_attention
-from tensor2tensor.utils.hparam import HParams
+from tensor2tensor.utils import hparam
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
 
 
 class CommonImageAttentionTest(parameterized.TestCase, tf.test.TestCase):
@@ -37,10 +38,10 @@ class CommonImageAttentionTest(parameterized.TestCase, tf.test.TestCase):
     batch = 1
     rows = 8
     cols = 24
-    hparams = HParams(
+    hparams = hparam.HParams(
         hidden_size=2,
         likelihood=likelihood,
-        mode=tf.estimator.ModeKeys.TRAIN,
+        mode=tf_estimator.ModeKeys.TRAIN,
         num_mixtures=num_mixtures,
     )
     inputs = tf.random_uniform([batch, rows, cols, hparams.hidden_size],
@@ -59,11 +60,11 @@ class CommonImageAttentionTest(parameterized.TestCase, tf.test.TestCase):
     cols = 24
     block_length = 4
     block_width = 2
-    hparams = HParams(
+    hparams = hparam.HParams(
         block_raster_scan=True,
         hidden_size=2,
         likelihood=likelihood,
-        mode=tf.estimator.ModeKeys.PREDICT,
+        mode=tf_estimator.ModeKeys.PREDICT,
         num_mixtures=num_mixtures,
         query_shape=[block_length, block_width],
     )
@@ -91,11 +92,11 @@ class CommonImageAttentionTest(parameterized.TestCase, tf.test.TestCase):
       cols = channels * width
     else:
       cols = width
-    hparams = HParams(
+    hparams = hparam.HParams(
         hidden_size=2,
         likelihood=likelihood,
         num_channels=channels,
-        mode=tf.estimator.ModeKeys.TRAIN,
+        mode=tf_estimator.ModeKeys.TRAIN,
         num_mixtures=num_mixtures,
     )
     decoder_output = tf.random_normal([batch, rows, cols, hparams.hidden_size])

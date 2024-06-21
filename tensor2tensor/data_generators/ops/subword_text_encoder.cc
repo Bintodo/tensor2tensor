@@ -12,16 +12,15 @@ namespace tensor2tensor {
 namespace {
 
 using ::tensorflow::Env;
-using ::tensorflow::Tensor;
 
 // End of Sequence token ID to insert at end of encoded text.
-constexpr int64 kEosTokenId = 1;
+constexpr int64_t kEosTokenId = 1;
 
 }  // namespace
 
-SubwordTextEncoder::SubwordTextEncoder(const string& vocab_filename) {
+SubwordTextEncoder::SubwordTextEncoder(const std::string& vocab_filename) {
   // TODO(ormandi): Add a unified vocabulary reader function.
-  string vocab_contents;
+  std::string vocab_contents;
   TF_CHECK_OK(
       ReadFileToString(Env::Default(), vocab_filename, &vocab_contents));
   std::vector<absl::string_view> vocab_list =
@@ -43,27 +42,34 @@ SubwordTextEncoder::SubwordTextEncoder(const string& vocab_filename) {
       CHECK_GE(c, 0);
       alphabet_.insert(c);
     } while (char_index < token.length());
-    vocab_.insert({string(token), i});
+    vocab_.insert({std::string(token), i});
   }
 }
 
 void SubwordTextEncoder::Encode(absl::string_view text, std::vector<int>* ids) {
+  // Subsequent code can read characters beyond the bound of the string_view
+  // in "text".  For example, U8_NEXT requires that the offset should be
+  // strictly smaller than the length, but this is possible with the code
+  // below.  Ideally, this should not happen, but work around this issue by
+  // using the pointer to circumvent bounds checking until the code or tests
+  // are fixed.
+  const char* ptr = text.data();
+
   ids->clear();
   int token_start = 0;
   int token_end = 0;
   UChar32 c;
   UChar32 next_c;
-  U8_NEXT(text, token_end, text.length(), c);
+  U8_NEXT(ptr, token_end, text.length(), c);
   CHECK_GE(c, 0);
   while (token_end <= text.length()) {
     int next_end = token_end;
-    U8_NEXT(text, next_end, text.length(), next_c);
+    U8_NEXT(ptr, next_end, text.length(), next_c);
     CHECK_GE(next_c, 0);
     // Subtoken break when switching from non-alphanum to alphanum, or when
     // reaching the end of the original token.
     if (u_isalnum(next_c) != u_isalnum(c) || token_end >= text.length()) {
-      absl::string_view next_token =
-          text.substr(token_start, token_end - token_start);
+      absl::string_view next_token(ptr + token_start, token_end - token_start);
       if (next_token != " ") {
         EncodeSubtokens(next_token, ids);
       }
@@ -77,7 +83,7 @@ void SubwordTextEncoder::Encode(absl::string_view text, std::vector<int>* ids) {
 
 void SubwordTextEncoder::EncodeSubtokens(
     absl::string_view token, std::vector<int> *ids) {
-  string token_s = EscapeToken(token);
+  std::string token_s = EscapeToken(token);
   token = token_s;
   int subtoken_start = 0;
   // TODO(noam): this algorithm is quadratic in the length of the token.
@@ -103,8 +109,8 @@ void SubwordTextEncoder::EncodeSubtokens(
   }
 }
 
-string SubwordTextEncoder::EscapeToken(absl::string_view token) {
-  string token_s;
+std::string SubwordTextEncoder::EscapeToken(absl::string_view token) {
+  std::string token_s;
   int i = 0;
   do {
     int prev = i;

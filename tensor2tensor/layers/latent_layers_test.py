@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -27,8 +27,9 @@ from tensor2tensor.layers import latent_layers
 from tensor2tensor.models import transformer
 from tensor2tensor.utils import test_utils
 
-import tensorflow as tf
-tf.compat.v1.enable_eager_execution()
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
+tf.enable_eager_execution()
 
 
 def imagetransformer_latent_tiny():
@@ -92,9 +93,25 @@ def imagetransformer_latent_tiny():
 class LatentLayersTest(tf.test.TestCase):
 
   @test_utils.run_in_graph_and_eager_modes()
+  def testComputeBitsAndNats(self):
+    reconstruction_loss = tf.random_uniform(())
+    prior_loss = tf.random_uniform(())
+    data_dim = tf.random_uniform((), maxval=1000, dtype=tf.int32)
+    latent_dim = tf.random_uniform((), maxval=1000, dtype=tf.int32)
+    nats_per_dim, bits_per_dim = latent_layers.compute_nats_and_bits_per_dim(
+        data_dim,
+        latent_dim,
+        reconstruction_loss,
+        prior_loss)
+
+    nats_per_dim_py, bits_per_dim_conv_py = self.evaluate(
+        [nats_per_dim, bits_per_dim * tf.log(2.)])
+    self.assertAllClose(nats_per_dim_py, bits_per_dim_conv_py)
+
+  @test_utils.run_in_graph_and_eager_modes()
   def testTransformerAutoencoder(self):
     hparams = imagetransformer_latent_tiny()
-    hparams.mode = tf.estimator.ModeKeys.TRAIN
+    hparams.mode = tf_estimator.ModeKeys.TRAIN
     block_dim = int(hparams.hidden_size // hparams.num_blocks)
     block_v_size = 2**(hparams.bottleneck_bits /
                        (hparams.num_residuals * hparams.num_blocks))

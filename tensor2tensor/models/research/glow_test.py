@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,13 +22,15 @@ from __future__ import print_function
 import os
 import tempfile
 import numpy as np
+from six.moves import range
 from tensor2tensor import problems
 from tensor2tensor.data_generators import cifar  # pylint: disable=unused-import
 from tensor2tensor.models.research import glow
 from tensor2tensor.utils import registry  # pylint: disable=unused-import
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
 
-MODES = tf.estimator.ModeKeys
+MODES = tf_estimator.ModeKeys
 
 
 class GlowModelTest(tf.test.TestCase):
@@ -51,7 +53,7 @@ class GlowModelTest(tf.test.TestCase):
       hparams.data_dir = ''
       cifar_problem = problems.problem('image_cifar10_plain_random_shift')
       hparams.problem = cifar_problem
-      model = glow.Glow(hparams, tf.estimator.ModeKeys.TRAIN)
+      model = glow.Glow(hparams, tf_estimator.ModeKeys.TRAIN)
       train_dataset = cifar_problem.dataset(MODES.TRAIN)
       one_shot = train_dataset.make_one_shot_iterator()
       x_batch, y_batch = self.batch(one_shot)
@@ -84,7 +86,7 @@ class GlowModelTest(tf.test.TestCase):
     with tf.Graph().as_default():
       cifar_problem = problems.problem('image_cifar10_plain_random_shift')
       hparams.problem = cifar_problem
-      model = glow.Glow(hparams, tf.estimator.ModeKeys.TRAIN)
+      model = glow.Glow(hparams, tf_estimator.ModeKeys.TRAIN)
       train_dataset = cifar_problem.dataset(MODES.TRAIN)
       one_shot = train_dataset.make_one_shot_iterator()
       x_batch, y_batch = self.batch(one_shot)
@@ -108,7 +110,7 @@ class GlowModelTest(tf.test.TestCase):
     with tf.Graph().as_default():
       cifar_problem = problems.problem('image_cifar10_plain_random_shift')
       hparams.problem = cifar_problem
-      model = glow.Glow(hparams, tf.estimator.ModeKeys.PREDICT)
+      model = glow.Glow(hparams, tf_estimator.ModeKeys.PREDICT)
       test_dataset = cifar_problem.dataset(MODES.EVAL)
       one_shot = test_dataset.make_one_shot_iterator()
       x_batch, y_batch = self.batch(one_shot)

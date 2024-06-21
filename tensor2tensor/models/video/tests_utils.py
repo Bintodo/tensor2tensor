@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,7 +25,8 @@ from tensor2tensor.data_generators import video_generated  # pylint: disable=unu
 from tensor2tensor.layers import modalities
 from tensor2tensor.utils import registry
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
 
 
 def fill_hparams(hparams, in_frames, out_frames):
@@ -116,7 +117,7 @@ class BaseNextFrameTest(tf.test.TestCase):
 
   def RunModel(self, model, hparams, features):
     with tf.Session() as session:
-      model = model(hparams, tf.estimator.ModeKeys.TRAIN)
+      model = model(hparams, tf_estimator.ModeKeys.TRAIN)
       logits, _ = model(features)
       session.run(tf.global_variables_initializer())
       res = session.run(logits)
@@ -124,7 +125,7 @@ class BaseNextFrameTest(tf.test.TestCase):
 
   def InferModel(self, model, hparams, features):
     with tf.Session() as session:
-      model = model(hparams, tf.estimator.ModeKeys.PREDICT)
+      model = model(hparams, tf_estimator.ModeKeys.PREDICT)
       output = model.infer(features)
       session.run(tf.global_variables_initializer())
       res = session.run(output)

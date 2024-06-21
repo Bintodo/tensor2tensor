@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,10 +23,12 @@ import os
 
 from tensor2tensor.data_generators import generator_utils
 from tensor2tensor.data_generators import image_utils
+from tensor2tensor.data_generators import problem
 from tensor2tensor.layers import modalities
 from tensor2tensor.utils import registry
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
 
 # URLs and filenames for IMAGENET 32x32 data from
 # https://arxiv.org/abs/1601.06759.
@@ -104,7 +106,7 @@ def imagenet_preprocess_example(example, mode, resize_size=None,
   assert resize_size[0] == resize_size[1]
 
   image = example["inputs"]
-  if mode == tf.estimator.ModeKeys.TRAIN:
+  if mode == tf_estimator.ModeKeys.TRAIN:
     image = preprocess_for_train(image, image_size=resize_size[0],
                                  normalize=normalize)
   else:
@@ -328,6 +330,31 @@ class ImageImagenetMultiResolutionGen(ImageImagenet64Gen):
         for scaled_image, res in zip(scaled_images, hparams.resolutions)],
                                   axis=0)
     return example
+
+
+@registry.register_problem
+class ImageImagenet64GenFlat(ImageImagenet64Gen):
+  """Imagenet 64 from the pixen cnn paper, as a flat array."""
+
+  def dataset_filename(self):
+    return "image_imagenet64_gen"  # Reuse data.
+
+  def preprocess_example(self, example, mode, unused_hparams):
+    example["inputs"].set_shape(
+        [_IMAGENET_MEDIUM_IMAGE_SIZE, _IMAGENET_MEDIUM_IMAGE_SIZE, 3])
+    example["inputs"] = tf.to_int64(example["inputs"])
+    example["inputs"] = tf.reshape(example["inputs"], (-1,))
+
+    del example["targets"]  # Ensure unconditional generation
+
+    return example
+
+  def hparams(self, defaults, model_hparams):
+    super(ImageImagenet64GenFlat, self).hparams(defaults, model_hparams)
+    # Switch to symbol modality
+    p = defaults
+    p.modality["inputs"] = modalities.ModalityType.SYMBOL_WEIGHTS_ALL
+    p.input_space_id = problem.SpaceID.GENERIC
 
 
 @registry.register_problem

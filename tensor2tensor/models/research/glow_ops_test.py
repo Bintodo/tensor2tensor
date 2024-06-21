@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,24 +23,24 @@ import os
 import tempfile
 from absl.testing import parameterized
 import numpy as np
+from six.moves import range
+from six.moves import zip
 from tensor2tensor.models.research import glow
 from tensor2tensor.models.research import glow_ops
-from tensor2tensor.utils.hparam import HParams
-import tensorflow as tf
+from tensor2tensor.utils import contrib
+from tensor2tensor.utils import hparam
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
 
-arg_scope = tf.contrib.framework.arg_scope
-add_arg_scope = tf.contrib.framework.add_arg_scope
-
-
-arg_scope = tf.contrib.framework.arg_scope
-add_arg_scope = tf.contrib.framework.add_arg_scope
+arg_scope = contrib.framework().arg_scope
+add_arg_scope = contrib.framework().add_arg_scope
 
 
 class GlowOpsTest(parameterized.TestCase, tf.test.TestCase):
 
   def get_glow_hparams(self):
     hparams = glow.glow_hparams()
-    hparams.add_hparam("mode", tf.estimator.ModeKeys.TRAIN)
+    hparams.add_hparam("mode", tf_estimator.ModeKeys.TRAIN)
     hparams.add_hparam("num_cond_latents", 1)
     hparams.add_hparam("latent_architecture", "glow_resnet")
     # Use latent skip connections
@@ -157,7 +157,7 @@ class GlowOpsTest(parameterized.TestCase, tf.test.TestCase):
   def check_latent_to_dist(self, architecture):
     with tf.Graph().as_default():
       x = tf.random_uniform(shape=(16, 5, 5, 32))
-      hparams = HParams(architecture=architecture)
+      hparams = hparam.HParams(architecture=architecture)
       x_prior = glow_ops.latent_to_dist("split_prior", x, hparams=hparams,
                                         output_channels=64)
       mean_t, scale_t = x_prior.loc, x_prior.scale

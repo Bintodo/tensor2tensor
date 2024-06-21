@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,22 +24,26 @@ import numpy as np
 import scipy
 from tensor2tensor.layers import common_layers
 from tensor2tensor.layers import common_video
-import tensorflow as tf
+from tensor2tensor.utils import contrib
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
 import tensorflow_probability as tfp
 
-arg_scope = tf.contrib.framework.arg_scope
-add_arg_scope = tf.contrib.framework.add_arg_scope
+arg_scope = contrib.framework().arg_scope
+add_arg_scope = contrib.framework().add_arg_scope
 
 
 def linear_interpolate(tensor1, tensor2, coeffs):
   """Linearly interpolate between two tensors at coeff.
 
   Args:
-    tensor1: 3-D Tensor, NHWC
-    tensor2: 3-D Tensor, NHWC
+    tensor1: 4-D Tensor, shape=(NHWC)
+    tensor2: 4-D Tensor, shape=(NHWC)
     coeffs: list of floats.
   Returns:
-    interp_latents: list of interpolated 4-D Tensors, shape=(1HWC)
+    interp_latents: 5-D Tensor, with interp_latents[i] representing
+                    interpolations at coeffs[i].
+                    shape=(len(coeffs), NHWC)
   """
   interp_tensors = []
   for coeff in coeffs:
@@ -167,7 +171,8 @@ def check_cond_latents(cond_latents, hparams):
 def get_variable_ddi(name, shape, initial_value, dtype=tf.float32, init=False,
                      trainable=True):
   """Wrapper for data-dependent initialization."""
-  # If init is a tensor bool, w is returned dynamically.
+  # If init is a tf bool: w is assigned dynamically at runtime.
+  # If init is a python bool: then w is determined during graph construction.
   w = tf.get_variable(name, shape, dtype, None, trainable=trainable)
   if isinstance(init, bool):
     if init:
@@ -179,7 +184,9 @@ def get_variable_ddi(name, shape, initial_value, dtype=tf.float32, init=False,
 
 @add_arg_scope
 def get_dropout(x, rate=0.0, init=True):
-  """Zero dropout during init or prediction time.
+  """Dropout x with dropout_rate = rate.
+
+  Apply zero dropout during init or prediction time.
 
   Args:
     x: 4-D Tensor, shape=(NHWC).
@@ -384,11 +391,7 @@ def invertible_1x1_conv(name, x, reverse=False):
       w = tf.reshape(w, [1, 1] + w_shape)
       x = tf.nn.conv2d(x, w, [1, 1, 1, 1], "SAME", data_format="NHWC")
     else:
-      u_inv = tf.matrix_inverse(u)
-      l_inv = tf.matrix_inverse(l)
-      p_inv = tf.matrix_inverse(p)
-      w_inv = tf.matmul(u_inv, tf.matmul(l_inv, p_inv))
-      w_inv = tf.reshape(w_inv, [1, 1]+w_shape)
+      w_inv = tf.reshape(tf.linalg.inv(w), [1, 1]+w_shape)
       x = tf.nn.conv2d(
           x, w_inv, [1, 1, 1, 1], "SAME", data_format="NHWC")
       objective *= -1
@@ -666,13 +669,13 @@ def additive_coupling(name, x, mid_channels=512, reverse=False,
 
   Args:
     name: variable scope.
-    x: 4-D Tensor.
+    x: 4-D Tensor, shape=(NHWC).
     mid_channels: number of channels in the coupling layer.
     reverse: Forward or reverse operation.
     activation: "relu" or "gatu"
     dropout: default, 0.0
   Returns:
-    output:
+    output: 4-D Tensor, shape=(NHWC)
     objective: 0.0
   """
   with tf.variable_scope(name, reuse=tf.AUTO_REUSE):
@@ -703,7 +706,7 @@ def affine_coupling(name, x, mid_channels=512, activation="relu",
     reverse: Forward or reverse operation.
     dropout: default, 0.0
   Returns:
-    output: input s
+    output: x shifted and scaled by an affine transformation.
     objective: log-determinant of the jacobian
   """
   with tf.variable_scope(name, reuse=tf.AUTO_REUSE):
@@ -929,7 +932,7 @@ def noise_op(latents, hparams):
   Returns:
     latents: latents with isotropic gaussian noise appended.
   """
-  if hparams.latent_noise == 0 or hparams.mode != tf.estimator.ModeKeys.TRAIN:
+  if hparams.latent_noise == 0 or hparams.mode != tf_estimator.ModeKeys.TRAIN:
     return latents
   latent_shape = common_layers.shape_list(latents)
   return latents + tf.random_normal(latent_shape, stddev=hparams.latent_noise)
@@ -1097,7 +1100,7 @@ def split(name, x, reverse=False, eps=None, eps_std=None, cond_latents=None,
     name: variable scope.
     x: 4-D Tensor, shape (NHWC).
     reverse: Forward or reverse pass.
-    eps: If eps is provided, x2 is set to be
+    eps: If eps is provided, x2 is set to be mu(x1) + eps * sigma(x1).
     eps_std: Sample x2 with the provided eps_std.
     cond_latents: optionally condition x2 on cond_latents.
     hparams: next_frame_glow hparams.
@@ -1108,6 +1111,16 @@ def split(name, x, reverse=False, eps=None, eps_std=None, cond_latents=None,
     temperature: Temperature with which to sample from the gaussian.
 
   Returns:
+    If reverse:
+      x: 4-D Tensor, concats input and x2 across channels.
+      x2: 4-D Tensor, a sample from N(mu(x1), sigma(x1))
+    Else:
+      x1: 4-D Tensor, Output of the split operation.
+      logpb: log-probability of x2 belonging to mu(x1), sigma(x1)
+      eps: 4-D Tensor, (x2 - mu(x1)) / sigma(x1)
+      x2: 4-D Tensor, Latent representation at the current level.
+    state: Current LSTM state.
+           4-D Tensor, only if hparams.latent_dist_encoder is set to conv_lstm.
   Raises:
     ValueError: If latent is provided and shape is not equal to NHW(C/2)
                 where (NHWC) is the size of x.
@@ -1178,7 +1191,17 @@ def revnet_step(name, x, hparams, reverse=True):
 
 
 def revnet(name, x, hparams, reverse=True):
-  """'hparams.depth' steps of generative flow."""
+  """'hparams.depth' steps of generative flow.
+
+  Args:
+    name: variable scope for the revnet block.
+    x: 4-D Tensor, shape=(NHWC).
+    hparams: HParams.
+    reverse: bool, forward or backward pass.
+  Returns:
+    x: 4-D Tensor, shape=(NHWC).
+    objective: float.
+  """
   with tf.variable_scope(name, reuse=tf.AUTO_REUSE):
     steps = np.arange(hparams.depth)
     if reverse:
@@ -1275,7 +1298,33 @@ def uniform_binning_correction(x, n_bits=8):
 def encoder_decoder(name, x, hparams, eps=None, reverse=False,
                     cond_latents=None, condition=False, states=None,
                     temperature=1.0):
-  """Glow encoder-decoder. n_levels of (Squeeze + Flow + Split.) operations."""
+  """Glow encoder-decoder. n_levels of (Squeeze + Flow + Split.) operations.
+
+  Args:
+    name: variable scope.
+    x: 4-D Tensor, shape=(NHWC).
+    hparams: HParams.
+    eps: Stores (glow(x) - mu) / sigma during the forward pass.
+         Used only to test if the network is reversible.
+    reverse: Forward or reverse pass.
+    cond_latents: list of lists of tensors.
+                  outer length equals hparams.num_cond_latents
+                  innter length equals hparams.num_levels - 1.
+    condition: If set to True, condition the encoder/decoder on cond_latents.
+    states: LSTM states, used only if hparams.latent_dist_encoder is set
+            to "conv_lstm.
+    temperature: Temperature set during sampling.
+  Returns:
+    x: If reverse, decoded image, else the encoded glow latent representation.
+    objective: log-likelihood.
+    eps: list of tensors, shape=(num_levels-1).
+         Stores (glow(x) - mu_level(x)) / sigma_level(x)) for each level.
+    all_latents: list of tensors, shape=(num_levels-1).
+                 Latent representatios for each level.
+    new_states: list of tensors, shape=(num_levels-1).
+                useful only if hparams.latent_dist_encoder="conv_lstm", returns
+                the current state of each level.
+  """
   # TODO(mechcoder) Change return_type to a dict to be backward compatible.
   with tf.variable_scope(name, reuse=tf.AUTO_REUSE):
 

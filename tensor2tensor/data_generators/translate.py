@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,17 +22,17 @@ from __future__ import print_function
 import gzip
 import os
 import tarfile
+import zipfile
 from tensor2tensor.data_generators import cleaner_en_xx
 from tensor2tensor.data_generators import generator_utils
 from tensor2tensor.data_generators import problem
 from tensor2tensor.data_generators import text_encoder
 from tensor2tensor.data_generators import text_problems
 from tensor2tensor.utils import bleu_hook
+from tensor2tensor.utils import contrib
 from tensor2tensor.utils import mlperf_log
 
-import tensorflow as tf
-
-FLAGS = tf.flags.FLAGS
+import tensorflow.compat.v1 as tf
 
 
 class TranslateProblem(text_problems.Text2TextProblem):
@@ -58,7 +58,12 @@ class TranslateProblem(text_problems.Text2TextProblem):
     """Files to be passed to get_or_generate_vocab."""
     return self.source_data_files(problem.DatasetSplit.TRAIN)
 
-  def generate_samples(self, data_dir, tmp_dir, dataset_split):
+  def generate_samples(
+      self,
+      data_dir,
+      tmp_dir,
+      dataset_split,
+      custom_iterator=text_problems.text2text_txt_iterator):
     datasets = self.source_data_files(dataset_split)
     tag = "dev"
     datatypes_to_clean = None
@@ -68,8 +73,8 @@ class TranslateProblem(text_problems.Text2TextProblem):
     data_path = compile_data(
         tmp_dir, datasets, "%s-compiled-%s" % (self.name, tag),
         datatypes_to_clean=datatypes_to_clean)
-    return text_problems.text2text_txt_iterator(data_path + ".lang1",
-                                                data_path + ".lang2")
+
+    return custom_iterator(data_path + ".lang1", data_path + ".lang2")
 
   def generate_text_for_vocab(self, data_dir, tmp_dir):
     return generator_utils.generate_lines_for_vocab(tmp_dir,
@@ -91,8 +96,7 @@ def compute_bleu_summaries(hook_args):
   """
   decode_hparams = hook_args.decode_hparams
 
-  if (decode_hparams.decode_reference is None or
-      decode_hparams.decode_to_file is None):
+  if not (decode_hparams.decode_reference and decode_hparams.decode_to_file):
     return None
 
   values = []
@@ -174,6 +178,9 @@ def compile_data(tmp_dir, datasets, filename, datatypes_to_clean=None):
         compressed_filepath = os.path.join(tmp_dir, compressed_filename)
         if url.startswith("http"):
           generator_utils.maybe_download(tmp_dir, compressed_filename, url)
+        if compressed_filename.endswith(".zip"):
+          zipfile.ZipFile(os.path.join(compressed_filepath),
+                          "r").extractall(tmp_dir)
 
         if dataset[1][0] == "tmx":
           cleaning_requested = "tmx" in datatypes_to_clean
@@ -259,6 +266,7 @@ def compile_data(tmp_dir, datasets, filename, datatypes_to_clean=None):
 class TranslateDistillProblem(TranslateProblem):
   """Base class for translation problems."""
 
+  @property
   def is_generate_per_split(self):
     return True
 
@@ -270,8 +278,8 @@ class TranslateDistillProblem(TranslateProblem):
 
     # hack: ignoring true targets and putting dist_targets in targets
     data_items_to_decoders = {
-        "inputs": tf.contrib.slim.tfexample_decoder.Tensor("inputs"),
-        "targets": tf.contrib.slim.tfexample_decoder.Tensor("dist_targets"),
+        "inputs": contrib.slim().tfexample_decoder.Tensor("inputs"),
+        "targets": contrib.slim().tfexample_decoder.Tensor("dist_targets"),
     }
 
     return (data_fields, data_items_to_decoders)
@@ -304,3 +312,45 @@ class TranslateDistillProblem(TranslateProblem):
     return text_problems.text2text_distill_iterator(data_path + "inputs",
                                                     data_path + "gold",
                                                     data_path + "prediction")
+
+
+class TranslateWmt20Problem(TranslateProblem):
+  """Base class for WMT20 Datasets."""
+
+  @property
+  def is_generate_per_split(self):
+    return True
+
+  def generate_encoded_samples(self, data_dir, tmp_dir, dataset_split):
+    generator = self.generate_samples(data_dir, tmp_dir, dataset_split)
+    vocab = self.get_or_create_vocab(data_dir, tmp_dir)
+    # For each example, encode the text and append EOS ID.
+    for sample in generator:
+      if self.has_inputs:
+        sample["inputs"] = vocab.encode(sample["inputs"])
+        sample["inputs"].append(text_encoder.EOS_ID)
+        sample["targets"] = vocab.encode(sample["targets"])
+        sample["targets"].append(text_encoder.EOS_ID)
+        yield sample
+
+  def generate_text_for_vocab(self, data_dir, tmp_dir):
+    for i, sample in enumerate(
+        self.generate_samples(data_dir, tmp_dir, problem.DatasetSplit.TRAIN)):
+      if self.has_inputs:
+        yield sample["inputs"]
+      yield sample["targets"]
+      if self.max_samples_for_vocab and (i + 1) >= self.max_samples_for_vocab:
+        break
+
+  def generate_samples(self, data_dir, tmp_dir, dataset_split):
+    data_path = self.source_data_files(dataset_split)[0]
+    return text_problems.text2text_txt_tab_iterator(data_path)
+
+
+class TranslateSamanantarProblem(TranslateWmt20Problem):
+  """Base class for Samanantar Datasets."""
+
+  def generate_samples(self, data_dir, tmp_dir, dataset_split):
+    src_data_path = self.source_data_files(dataset_split)[0]
+    tgt_data_path = self.source_data_files(dataset_split)[1]
+    return text_problems.text2text_txt_iterator(src_data_path, tgt_data_path)

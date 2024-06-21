@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,16 +18,17 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from functools import partial
+from functools import partial  # pylint: disable=g-importing-member
 
 from tensor2tensor.layers import common_hparams
 from tensor2tensor.layers import common_image_attention as cia
 from tensor2tensor.layers import common_layers
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
 import tensorflow_probability as tfp
 
-from tensorflow.python.training import moving_averages
+from tensorflow.python.training import moving_averages  # pylint: disable=g-direct-tensorflow-import
 
 
 def project_hidden(x, projection_tensors, hidden_size, num_blocks):
@@ -309,6 +310,8 @@ def embed(x,
       h1a = tf.layers.dense(c, filter_size, name="vch1a")
       h1b = tf.layers.dense(1.0 - c, filter_size, name="vch1b")
       h1 = h1a + h1b
+      h1 = tf.layers.dense(h1, hidden_size, name="vch_final_linear")
+
     elif bottleneck_kind == "gumbel-softmax":
       hot = tf.one_hot(x, 2**z_size)
       h1 = tf.layers.dense(hot, hidden_size, name="dae_dense")
@@ -470,7 +473,7 @@ def gumbel_softmax(x,
     d_dev = -tf.reduce_mean(d_variance)
     ret = s
 
-    if mode != tf.estimator.ModeKeys.TRAIN:
+    if mode != tf_estimator.ModeKeys.TRAIN:
       ret = tf.reshape(maxvhot, common_layers.shape_list(s))  # Just hot @eval.
     return m, ret, d_dev * 5.0 + tf.reduce_mean(kl) * 0.002
 
@@ -687,10 +690,8 @@ def discrete_bottleneck(inputs,
           n = tf.reduce_sum(updated_ema_count_res, axis=-1, keep_dims=True)
           updated_ema_count_res = (
               (updated_ema_count_res + epsilon) / (n + 2**z_size * epsilon) * n)
-          # pylint: disable=g-no-augmented-assignment
           updated_ema_means_res = updated_ema_means_res / tf.expand_dims(
               updated_ema_count_res, axis=-1)
-          # pylint: enable=g-no-augmented-assignment
 
           with tf.control_dependencies([e_loss_res]):
             update_means_res = tf.assign(means[i],
@@ -754,7 +755,7 @@ def discrete_bottleneck(inputs,
       y_clean = common_layers.saturating_sigmoid(outputs_discrete)
       if summary:
         tf.summary.histogram("y_clean", tf.reshape(y_clean, [-1]))
-      if noise_dev > 0 and mode == tf.estimator.ModeKeys.TRAIN:
+      if noise_dev > 0 and mode == tf_estimator.ModeKeys.TRAIN:
         noise = tf.truncated_normal(
             common_layers.shape_list(outputs_discrete),
             mean=0.0,
@@ -766,13 +767,16 @@ def discrete_bottleneck(inputs,
       y_discrete = tf.stop_gradient(d) + y - tf.stop_gradient(y)
       pd = common_layers.inverse_exp_decay(startup_steps * 2)
       pd *= discrete_mix
-      pd = pd if mode == tf.estimator.ModeKeys.TRAIN else 1.0
+      pd = pd if mode == tf_estimator.ModeKeys.TRAIN else 1.0
       c = tf.where(
           tf.less(tf.random_uniform([common_layers.shape_list(y)[0]]), pd),
           y_discrete, y)
       outputs_dense_a = tf.layers.dense(c, filter_size, name="vch1a")
       outputs_dense_b = tf.layers.dense(1.0 - c, filter_size, name="vch1b")
       outputs_dense = outputs_dense_a + outputs_dense_b
+      outputs_dense = tf.layers.dense(outputs_dense, hidden_size,
+                                      name="vch_final_linear")
+
       dx = tf.to_int32(tf.stop_gradient(d))
       outputs_discrete = bit_to_int(dx, z_size)
       extra_loss = tf.constant(0.0)
@@ -789,8 +793,8 @@ def discrete_bottleneck(inputs,
 
 
 def predict_bits_with_lstm(prediction_source, state_size, total_num_bits,
-                           target_bits=None, bits_at_once=8, temperature=1.0,
-                           dropout=0.1):
+                           target_bits=None, extra_inputs=None,
+                           bits_at_once=8, temperature=1.0, dropout=0.1):
   """Predict a sequence of bits (a latent) with LSTM, both training and infer.
 
   Given a tensor on which the predictions are based (prediction_source), we use
@@ -807,6 +811,8 @@ def predict_bits_with_lstm(prediction_source, state_size, total_num_bits,
     total_num_bits: python integer, how many bits in total to predict.
     target_bits: a tensor of shape [batch_size, total_num_bits] used during
       training as the target to predict; each element should be -1 or 1.
+    extra_inputs: a Tensor [batch_size, total_num_bits // bits_at_once, d]
+      of additional inputs, passed as additional LSTM inputs.
     bits_at_once: pytho integer, how many bits to predict at once.
     temperature: python float, temperature used for sampling during inference.
     dropout: float, the amount of dropout to aply during training (0.1 default).
@@ -824,7 +830,7 @@ def predict_bits_with_lstm(prediction_source, state_size, total_num_bits,
     discrete_embed = tf.layers.Dense(state_size, name="discrete_embed")
     batch_size = common_layers.shape_list(prediction_source)[0]
     layer_pred = tf.layers.flatten(prediction_source)
-    prediction = tf.layers.dense(layer_pred, state_size, name="istate")
+    first_lstm_input = tf.layers.dense(layer_pred, state_size, name="istate")
     c_state = tf.layers.dense(layer_pred, state_size, name="cstate")
     m_state = tf.layers.dense(layer_pred, state_size, name="mstate")
     state = (c_state, m_state)
@@ -832,13 +838,16 @@ def predict_bits_with_lstm(prediction_source, state_size, total_num_bits,
     # Prediction mode if no targets are given.
     if target_bits is None:
       outputs = []
+      lstm_input = first_lstm_input
       for i in range(total_num_bits // bits_at_once):
-        output, state = lstm_cell(prediction, state)
+        if extra_inputs is not None:
+          lstm_input = tf.concat([lstm_input, extra_inputs[:, i, :]], axis=1)
+        output, state = lstm_cell(lstm_input, state)
         discrete_logits = discrete_predict(output)
         discrete_samples = common_layers.sample_with_temperature(
             discrete_logits, temperature)
         outputs.append(tf.expand_dims(discrete_samples, axis=1))
-        prediction = discrete_embed(tf.one_hot(discrete_samples, 256))
+        lstm_input = discrete_embed(tf.one_hot(discrete_samples, 256))
       outputs = tf.concat(outputs, axis=1)
       outputs = int_to_bit(outputs, bits_at_once)
       outputs = tf.reshape(outputs, [batch_size, total_num_bits])
@@ -846,25 +855,29 @@ def predict_bits_with_lstm(prediction_source, state_size, total_num_bits,
 
     # Training mode, calculating loss.
     assert total_num_bits % bits_at_once == 0
-    d_pred = tf.reshape(tf.maximum(tf.stop_gradient(target_bits), 0), [
+    target_bits = tf.reshape(tf.maximum(tf.stop_gradient(target_bits), 0), [
         batch_size, total_num_bits // bits_at_once, bits_at_once])
-    d_int = bit_to_int(d_pred, bits_at_once)
-    tf.summary.histogram("target_integers", tf.reshape(d_int, [-1]))
-    d_hot = tf.one_hot(d_int, 2**bits_at_once, axis=-1)
-    d_pred = discrete_embed(d_hot)
-    d_pred = tf.nn.dropout(d_pred, 1.0 - dropout)
-    pred = tf.concat([tf.expand_dims(prediction, axis=1), d_pred], axis=1)
+    target_ints = bit_to_int(target_bits, bits_at_once)
+    tf.summary.histogram("target_integers", tf.reshape(target_ints, [-1]))
+    target_hot = tf.one_hot(target_ints, 2**bits_at_once, axis=-1)
+    target_embedded = discrete_embed(target_hot)
+    target_embedded = tf.nn.dropout(target_embedded, 1.0 - dropout)
+    teacher_input = tf.concat(
+        [tf.expand_dims(first_lstm_input, axis=1), target_embedded], axis=1)
     outputs = []
     for i in range(total_num_bits // bits_at_once):
-      output, state = lstm_cell(pred[:, i, :], state)
+      lstm_input = teacher_input[:, i, :]
+      if extra_inputs is not None:
+        lstm_input = tf.concat([lstm_input, extra_inputs[:, i, :]], axis=1)
+      output, state = lstm_cell(lstm_input, state)
       outputs.append(tf.expand_dims(output, axis=1))
     outputs = tf.concat(outputs, axis=1)
     outputs = tf.nn.dropout(outputs, 1.0 - dropout)
     d_int_pred = discrete_predict(outputs)
     pred_loss = tf.losses.sparse_softmax_cross_entropy(
-        logits=d_int_pred, labels=d_int)
+        logits=d_int_pred, labels=target_ints)
     pred_loss = tf.reduce_mean(pred_loss)
-    return target_bits, pred_loss
+    return d_int_pred, pred_loss
 
 
 # New API for discretization bottlenecks:
@@ -890,7 +903,10 @@ def get_vq_codebook(codebook_size, hidden_size):
     with tf.colocate_with(means):
       ema_means = tf.get_variable(
           name="ema_means",
-          initializer=means.initialized_value(),
+          initializer=tf.cond(
+              tf.is_variable_initialized(means),
+              means.read_value,
+              lambda: means.initial_value),
           trainable=False)
 
   return means, ema_means, ema_count
@@ -986,7 +1002,7 @@ def vq_body(x,
         return beta * e_loss
 
   # Loss, also do update if requested.
-  if do_update is True:
+  if do_update:
     loss = loss_with_update()
   else:
     loss = tf.cond(do_update, loss_with_update, lambda: beta * e_loss)
@@ -1367,17 +1383,17 @@ def tanh_discrete_bottleneck(x, bottleneck_bits, bottleneck_noise,
   """Simple discretization through tanh, flip bottleneck_noise many bits."""
   x = tf.layers.dense(x, bottleneck_bits, name="tanh_discrete_bottleneck")
   d0 = tf.stop_gradient(2.0 * tf.to_float(tf.less(0.0, x))) - 1.0
-  if mode == tf.estimator.ModeKeys.TRAIN:
+  if mode == tf_estimator.ModeKeys.TRAIN:
     x += tf.truncated_normal(
         common_layers.shape_list(x), mean=0.0, stddev=0.2)
   x = tf.tanh(x)
   d = x + tf.stop_gradient(2.0 * tf.to_float(tf.less(0.0, x)) - 1.0 - x)
-  if mode == tf.estimator.ModeKeys.TRAIN:
+  if mode == tf_estimator.ModeKeys.TRAIN:
     noise = tf.random_uniform(common_layers.shape_list(x))
     noise = 2.0 * tf.to_float(tf.less(bottleneck_noise, noise)) - 1.0
     d *= noise
   d = common_layers.mix(d, x, discretize_warmup_steps,
-                        mode == tf.estimator.ModeKeys.TRAIN)
+                        mode == tf_estimator.ModeKeys.TRAIN)
   return d, d0
 
 
@@ -1398,13 +1414,13 @@ def isemhash_bottleneck(x,
   with tf.variable_scope("isemhash_bottleneck"):
     x = tf.layers.dense(x, bottleneck_bits, name="dense")
     y = common_layers.saturating_sigmoid(x)
-    if isemhash_noise_dev > 0 and mode == tf.estimator.ModeKeys.TRAIN:
+    if isemhash_noise_dev > 0 and mode == tf_estimator.ModeKeys.TRAIN:
       noise = tf.truncated_normal(
           common_layers.shape_list(x), mean=0.0, stddev=isemhash_noise_dev)
       y = common_layers.saturating_sigmoid(x + noise)
     d = tf.to_float(tf.less(0.5, y)) + y - tf.stop_gradient(y)
     d = 2.0 * d - 1.0  # Move from [0, 1] to [-1, 1].
-    if mode == tf.estimator.ModeKeys.TRAIN:  # Flip some bits.
+    if mode == tf_estimator.ModeKeys.TRAIN:  # Flip some bits.
       noise = tf.random_uniform(common_layers.shape_list(x))
       noise = 2.0 * tf.to_float(tf.less(bottleneck_noise, noise)) - 1.0
       d *= noise
@@ -1412,7 +1428,7 @@ def isemhash_bottleneck(x,
           d,
           2.0 * y - 1.0,
           discretize_warmup_steps,
-          mode == tf.estimator.ModeKeys.TRAIN,
+          mode == tf_estimator.ModeKeys.TRAIN,
           max_prob=isemhash_mix_prob)
     return d, 0.0
 

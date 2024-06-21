@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -39,7 +39,8 @@ from tensor2tensor.rl.ppo_learner import PPOLearner
 from tensor2tensor.utils import misc_utils
 from tensor2tensor.utils import trainer_lib
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
 
 
 def compute_mean_reward(rollouts, clipped):
@@ -119,7 +120,7 @@ def evaluate_all_configs(
 
 def evaluate_world_model(
     real_env, hparams, world_model_dir, debug_video_path,
-    split=tf.estimator.ModeKeys.EVAL,
+    split=tf_estimator.ModeKeys.EVAL,
 ):
   """Evaluate the world model (reward accuracy)."""
   frame_stack_size = hparams.frame_stack_size
@@ -307,7 +308,9 @@ def setup_env(hparams,
       resize_height_factor=hparams.resize_height_factor,
       rl_env_max_episode_steps=rl_env_max_episode_steps,
       max_num_noops=max_num_noops,
-      maxskip_envs=maxskip_envs)
+      maxskip_envs=maxskip_envs,
+      sticky_actions=hparams.sticky_actions
+  )
   return env
 
 
@@ -337,7 +340,7 @@ def random_rollout_subsequences(rollouts, num_subsequences, subsequence_length):
 def make_initial_frame_chooser(
     real_env, frame_stack_size, simulation_random_starts,
     simulation_flip_first_random_for_beginning,
-    split=tf.estimator.ModeKeys.TRAIN,
+    split=tf_estimator.ModeKeys.TRAIN,
 ):
   """Make frame chooser.
 
@@ -392,7 +395,7 @@ def absolute_hinge_difference(arr1, arr2, min_diff=10, dtype=np.uint8):
   Returns:
     array
   """
-  diff = np.abs(arr1.astype(np.int) - arr2, dtype=np.int)
+  diff = np.abs(arr1.astype(int) - arr2, dtype=int)
   return np.maximum(diff - min_diff, 0).astype(dtype)
 
 
@@ -414,9 +417,8 @@ def augment_observation(
       (1, 15), "f:{:3}".format(int(frame_index)),
       fill=(255, 0, 0)
   )
-  header = np.asarray(img)
+  header = np.copy(np.asarray(img))
   del img
-  header.setflags(write=1)
   if bar_color is not None:
     header[0, :, :] = bar_color
   return np.concatenate([header, observation], axis=0)

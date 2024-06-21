@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -47,6 +47,12 @@ def next_frame_basic_deterministic():
   hparams.add_hparam("filter_double_steps", 2)
   hparams.add_hparam("pixel_sampling_temperature", 0.0)
   hparams.add_hparam("concat_internal_states", False)
+  hparams.add_hparam("do_autoregressive_rnn", False)
+  hparams.add_hparam("autoregressive_rnn_lookback", 8)
+  hparams.add_hparam("autoregressive_rnn_warmup_steps", 8000)
+  hparams.add_hparam("activation_fn", "relu")
+  hparams.bottom["inputs"] = modalities.video_identity_bottom
+  hparams.bottom["targets"] = modalities.video_identity_bottom
   return hparams
 
 

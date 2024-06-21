@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -32,16 +32,18 @@ from tensor2tensor.layers import common_attention
 from tensor2tensor.layers import common_layers
 from tensor2tensor.models import transformer
 from tensor2tensor.models.research import universal_transformer_util
+from tensor2tensor.utils import contrib
 from tensor2tensor.utils import registry
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 
 @registry.register_model
 class UniversalTransformer(transformer.Transformer):
   """Universal Transformer: Depth-wise recurrent transformer model."""
 
-  def encode(self, inputs, target_space, hparams, features=None, losses=None):
+  def encode(self, inputs, target_space, hparams, features=None, losses=None,
+             **kwargs):
     """Encode Universal Transformer inputs.
 
     It is similar to "transformer.encode", but it uses
@@ -56,6 +58,7 @@ class UniversalTransformer(transformer.Transformer):
       features: optionally pass the entire features dictionary as well.
         This is needed now for "packed" datasets.
       losses: Unused.
+      **kwargs: additional arguments to pass to encoder_function
 
     Returns:
       Tuple of:
@@ -96,7 +99,8 @@ class UniversalTransformer(transformer.Transformer):
              cache=None,
              decode_loop_step=None,
              nonpadding=None,
-             losses=None):
+             losses=None,
+             ** kwargs):
     """Decode Universal Transformer outputs from encoder representation.
 
     It is similar to "transformer.decode", but it uses
@@ -117,6 +121,7 @@ class UniversalTransformer(transformer.Transformer):
       decode_loop_step: Unused.
       nonpadding: optional Tensor with shape [batch_size, decoder_length]
       losses: Unused.
+      **kwargs: additional arguments to pass to decoder_function
 
     Returns:
        Tuple of:
@@ -215,7 +220,7 @@ class UniversalTransformer(transformer.Transformer):
           hparams.act_loss_weight *
           tf.reduce_mean(dec_ponder_times + dec_remainders))
       act_loss = enc_act_loss + dec_act_loss
-      tf.contrib.summary.scalar("act_loss", act_loss)
+      contrib.summary().scalar("act_loss", act_loss)
       return decoder_output, {"act_loss": act_loss}
 
     return decoder_output
@@ -343,14 +348,14 @@ class UniversalTransformerEncoder(transformer.Transformer):
       ponder_times, remainders = enc_extra_output
       act_loss = hparams.act_loss_weight * tf.reduce_mean(ponder_times +
                                                           remainders)
-      tf.contrib.summary.scalar("act_loss", act_loss)
+      contrib.summary().scalar("act_loss", act_loss)
 
       return encoder_output, {"act_loss": act_loss}
     return encoder_output
 
 
 def update_hparams_for_universal_transformer(hparams):
-  """Adds deault hparams for all of the variants of the Universal Transformer.
+  """Adds default hparams for all of the variants of the Universal Transformer.
 
   Args:
     hparams: default hparams (usually one of the standard hparams from
@@ -454,7 +459,6 @@ def universal_transformer_base():
 @registry.register_hparams
 def universal_transformer_base_tpu():
   hparams = universal_transformer_base()
-  hparams = update_hparams_for_universal_transformer(hparams)
   transformer.update_hparams_for_tpu(hparams)
   hparams.add_step_timing_signal = False
   return hparams
@@ -463,7 +467,6 @@ def universal_transformer_base_tpu():
 @registry.register_hparams
 def universal_transformer_big():
   hparams = universal_transformer_base()
-  hparams = update_hparams_for_universal_transformer(hparams)
   hparams.hidden_size = 2048
   hparams.filter_size = 8192
   return hparams
@@ -556,6 +559,19 @@ def adaptive_universal_transformer_multilayer_tpu():
 
 
 @registry.register_hparams
+def adaptive_universal_transformer_multilayer_hard():
+  """Multi-layer config for adaptive Transformer with hard attention."""
+  hparams = adaptive_universal_transformer_multilayer_tpu()
+  hparams.batch_size = 256
+  hparams.hard_attention_k = 8
+  hparams.add_step_timing_signal = True
+  # hparams.add_sru = True  # This is very slow on GPUs, does it help?
+  hparams.self_attention_type = "dot_product_relative_v2"
+  hparams.max_relative_position = 256
+  return hparams
+
+
+@registry.register_hparams
 def adaptive_universal_transformer_small():
   hparams = universal_transformer_small()
   hparams.recurrence_type = "act"
@@ -566,6 +582,14 @@ def adaptive_universal_transformer_small():
 def adaptive_universal_transformer_tiny():
   hparams = universal_transformer_tiny()
   hparams.recurrence_type = "act"
+  return hparams
+
+
+@registry.register_hparams
+def adaptive_universal_transformer_sepconv_tiny():
+  hparams = universal_transformer_tiny()
+  hparams.recurrence_type = "act"
+  hparams.transformer_ffn_type = "sepconv"
   return hparams
 
 
@@ -771,6 +795,13 @@ def universal_transformer_sepconv_base():
   return hparams
 
 
+@registry.register_hparams
+def universal_transformer_sepconv_tiny():
+  hparams = universal_transformer_tiny()
+  hparams.transformer_ffn_type = "sepconv"
+  return hparams
+
+
 @registry.register_ranged_hparams
 def universal_transformer_base_range(rhp):
   """Range of hyperparameters."""
@@ -779,7 +810,7 @@ def universal_transformer_base_range(rhp):
   rhp.set_discrete("hidden_size", [1024, 2048, 4096])
   rhp.set_discrete("filter_size", [2048, 4096, 8192])
   rhp.set_discrete("num_heads", [8, 16, 32])
-  rhp.set_discrete("transformer_ffn_type", ["sepconv", "fc"])
+  rhp.set_categorical("transformer_ffn_type", ["sepconv", "fc"])
   rhp.set_float("learning_rate", 0.3, 3.0, scale=rhp.LOG_SCALE)
   rhp.set_float("weight_decay", 0.0, 2.0)
 
@@ -793,6 +824,6 @@ def adaptive_universal_transformer_base_range(rhp):
   rhp.set_discrete("hidden_size", [1024, 2048, 4096])
   rhp.set_discrete("filter_size", [2048, 4096, 8192])
   rhp.set_discrete("num_heads", [8, 16, 32])
-  rhp.set_discrete("transformer_ffn_type", ["sepconv", "fc"])
+  rhp.set_categorical("transformer_ffn_type", ["sepconv", "fc"])
   rhp.set_float("learning_rate", 0.3, 3.0, scale=rhp.LOG_SCALE)
   rhp.set_float("weight_decay", 0.0, 2.0)

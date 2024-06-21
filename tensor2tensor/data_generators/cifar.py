@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,11 +29,13 @@ from six.moves import cPickle
 from tensor2tensor.data_generators import generator_utils
 from tensor2tensor.data_generators import image_utils
 from tensor2tensor.data_generators import mnist
+from tensor2tensor.data_generators import problem
 from tensor2tensor.layers import modalities
 from tensor2tensor.utils import metrics
 from tensor2tensor.utils import registry
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
 
 # URLs and filenames for CIFAR data.
 _CIFAR10_URL = "https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz"
@@ -130,7 +132,7 @@ class ImageCifar10Tune(mnist.ImageMnistTune):
   def preprocess_example(self, example, mode, unused_hparams):
     image = example["inputs"]
     image.set_shape([_CIFAR10_IMAGE_SIZE, _CIFAR10_IMAGE_SIZE, 3])
-    if mode == tf.estimator.ModeKeys.TRAIN:
+    if mode == tf_estimator.ModeKeys.TRAIN:
       image = image_utils.cifar_image_augmentation(image)
     if not self._was_reversed:
       image = tf.image.per_image_standardization(image)
@@ -180,6 +182,27 @@ class ImageCifar10PlainGen(ImageCifar10Plain):
 
 
 @registry.register_problem
+class ImageCifar10PlainGenFlat(ImageCifar10PlainGen):
+  """CIFAR-10 for image generation as a flat array of 64*64*3=12228 elements."""
+
+  def preprocess_example(self, example, mode, unused_hparams):
+    example["inputs"].set_shape([_CIFAR10_IMAGE_SIZE, _CIFAR10_IMAGE_SIZE, 3])
+    example["inputs"] = tf.to_int64(example["inputs"])
+    example["inputs"] = tf.reshape(example["inputs"], (-1,))
+
+    del example["targets"]  # Ensure unconditional generation
+
+    return example
+
+  def hparams(self, defaults, model_hparams):
+    super(ImageCifar10PlainGenFlat, self).hparams(defaults, model_hparams)
+    # Switch to symbol modality
+    p = defaults
+    p.modality["inputs"] = modalities.ModalityType.SYMBOL_WEIGHTS_ALL
+    p.input_space_id = problem.SpaceID.GENERIC
+
+
+@registry.register_problem
 class ImageCifar10PlainRandomShift(ImageCifar10Plain):
   """CIFAR-10 32x32 for image generation with random shift data-augmentation."""
 
@@ -189,7 +212,7 @@ class ImageCifar10PlainRandomShift(ImageCifar10Plain):
   def preprocess_example(self, example, mode, unused_hparams):
     example["inputs"].set_shape([_CIFAR10_IMAGE_SIZE, _CIFAR10_IMAGE_SIZE, 3])
     example["inputs"] = tf.to_int64(example["inputs"])
-    if mode == tf.estimator.ModeKeys.TRAIN:
+    if mode == tf_estimator.ModeKeys.TRAIN:
       example["inputs"] = image_utils.random_shift(
           example["inputs"], wsr=0.1, hsr=0.1)
     return example
@@ -369,7 +392,7 @@ class ImageCifar100Tune(mnist.ImageMnistTune):
   def preprocess_example(self, example, mode, unused_hparams):
     image = example["inputs"]
     image.set_shape([_CIFAR100_IMAGE_SIZE, _CIFAR100_IMAGE_SIZE, 3])
-    if mode == tf.estimator.ModeKeys.TRAIN:
+    if mode == tf_estimator.ModeKeys.TRAIN:
       image = image_utils.cifar_image_augmentation(image)
     if not self._was_reversed:
       image = tf.image.per_image_standardization(image)
@@ -500,7 +523,7 @@ class ImageCifar20Tune(mnist.ImageMnistTune):
   def preprocess_example(self, example, mode, unused_hparams):
     image = example["inputs"]
     image.set_shape([_CIFAR100_IMAGE_SIZE, _CIFAR100_IMAGE_SIZE, 3])
-    if mode == tf.estimator.ModeKeys.TRAIN:
+    if mode == tf_estimator.ModeKeys.TRAIN:
       image = image_utils.cifar_image_augmentation(image)
     if not self._was_reversed:
       image = tf.image.per_image_standardization(image)

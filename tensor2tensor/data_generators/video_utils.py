@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,9 +21,10 @@ from __future__ import print_function
 
 import functools
 import os
+
+from absl import flags
 import numpy as np
 import six
-
 from tensor2tensor.data_generators import generator_utils
 from tensor2tensor.data_generators import image_utils
 from tensor2tensor.data_generators import problem
@@ -31,12 +32,13 @@ from tensor2tensor.data_generators import text_encoder
 from tensor2tensor.layers import common_layers
 from tensor2tensor.layers import common_video
 from tensor2tensor.layers import modalities
+from tensor2tensor.utils import contrib
 from tensor2tensor.utils import metrics
 from tensor2tensor.utils import video_metrics
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
 
-import tensorflow as tf
 
-flags = tf.flags
 FLAGS = flags.FLAGS
 
 flags.DEFINE_bool(
@@ -94,8 +96,8 @@ def create_border(video, color="blue", border_percent=2):
   color_to_axis = {"blue": 2, "red": 0, "green": 1}
   axis = color_to_axis[color]
   _, _, height, width, _ = video.shape
-  border_height = np.ceil(border_percent * height / 100.0).astype(np.int)
-  border_width = np.ceil(border_percent * width / 100.0).astype(np.int)
+  border_height = np.ceil(border_percent * height / 100.0).astype(int)
+  border_width = np.ceil(border_percent * width / 100.0).astype(int)
   video[:, :, :border_height, :, axis] = 255
   video[:, :, -border_height:, :, axis] = 255
   video[:, :, :, :border_width, axis] = 255
@@ -384,7 +386,7 @@ class VideoProblem(problem.Problem):
 
     data_items_to_decoders = {
         "frame":
-            tf.contrib.slim.tfexample_decoder.Image(
+            contrib.slim().tfexample_decoder.Image(
                 image_key="image/encoded",
                 format_key="image/format",
                 shape=[self.frame_height, self.frame_width, self.num_channels],
@@ -404,7 +406,7 @@ class VideoProblem(problem.Problem):
         ])
 
     # TODO(michalski): add support for passing input_action and input_reward.
-    return tf.estimator.export.ServingInputReceiver(
+    return tf_estimator.export.ServingInputReceiver(
         features={"inputs": video_input_frames},
         receiver_tensors=video_input_frames)
 
@@ -513,12 +515,12 @@ class VideoProblem(problem.Problem):
 
     num_frames = (
         hparams.video_num_input_frames + hparams.video_num_target_frames)
-    if mode == tf.estimator.ModeKeys.PREDICT:
+    if mode == tf_estimator.ModeKeys.PREDICT:
       num_frames = min(self.max_frames_per_video(hparams), num_frames)
 
     # We jump by a random position at the beginning to add variety.
     if (self.random_skip and self.settable_random_skip and interleave and
-        mode == tf.estimator.ModeKeys.TRAIN):
+        mode == tf_estimator.ModeKeys.TRAIN):
       random_skip = tf.random_uniform([], maxval=num_frames, dtype=tf.int64)
       preprocessed_dataset = preprocessed_dataset.skip(random_skip)
     if (self.use_not_breaking_batching and
@@ -528,7 +530,7 @@ class VideoProblem(problem.Problem):
       batch_dataset = preprocessed_dataset.batch(num_frames,
                                                  drop_remainder=True)
     dataset = batch_dataset.map(features_from_batch)
-    if self.shuffle and interleave and mode == tf.estimator.ModeKeys.TRAIN:
+    if self.shuffle and interleave and mode == tf_estimator.ModeKeys.TRAIN:
       dataset = dataset.shuffle(hparams.get("shuffle_buffer_size", 128))
     return dataset
 
@@ -676,7 +678,7 @@ class VideoProblemOld(problem.Problem):
 
     data_items_to_decoders = {
         "inputs":
-            tf.contrib.slim.tfexample_decoder.Image(
+            contrib.slim().tfexample_decoder.Image(
                 image_key="image/encoded",
                 format_key="image/format",
                 channels=self.num_channels),
@@ -718,7 +720,7 @@ class VideoAugmentationProblem(VideoProblem):
     video_augment_func = functools.partial(
         video_augmentation, hue=self.hue, contrast=self.contrast,
         saturate=self.saturate)
-    if mode == tf.estimator.ModeKeys.TRAIN:
+    if mode == tf_estimator.ModeKeys.TRAIN:
       dataset = dataset.map(video_augment_func)
     return dataset
 
@@ -765,8 +767,8 @@ class Video2ClassProblem(VideoProblemOld):
     data_fields, data_items_to_decoders = (
         super(Video2ClassProblem, self).example_reading_spec())
     data_fields[label_key] = tf.FixedLenFeature((1,), tf.int64)
-    data_items_to_decoders[
-        "targets"] = tf.contrib.slim.tfexample_decoder.Tensor(label_key)
+    data_items_to_decoders["targets"] = contrib.slim().tfexample_decoder.Tensor(
+        label_key)
     return data_fields, data_items_to_decoders
 
   def hparams(self, defaults, unused_model_hparams):

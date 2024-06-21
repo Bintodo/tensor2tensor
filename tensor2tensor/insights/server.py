@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@ from gunicorn.app.base import BaseApplication
 from gunicorn.six import iteritems
 import numpy as np
 from tensor2tensor.insights import transformer_model
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 flags = tf.flags
 FLAGS = flags.FLAGS
@@ -184,7 +184,6 @@ def main(_):
       The landing page html text.
     """
     if (path == "index.js" or
-        path == "webcomponentsjs/custom-elements-es5-adapter.js" or
         path == "webcomponentsjs/webcomponents-lite.js"):
       # Some vulcanizing methods bundle the javascript into a index.js file
       # paired with index.html but leave two important webcomponents js files

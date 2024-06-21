@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,8 +25,9 @@ from tensor2tensor.layers import modalities
 from tensor2tensor.utils import expert_utils
 from tensor2tensor.utils import test_utils
 
-import tensorflow as tf
-tf.compat.v1.enable_eager_execution()
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
+tf.enable_eager_execution()
 
 
 class ModalityTest(tf.test.TestCase):
@@ -60,7 +61,7 @@ class ModalityTest(tf.test.TestCase):
     hidden_size = 9
     model_hparams = common_hparams.basic_params1()
     model_hparams.hidden_size = hidden_size
-    model_hparams.mode = tf.estimator.ModeKeys.TRAIN
+    model_hparams.mode = tf_estimator.ModeKeys.TRAIN
     x = np.random.randint(
         vocab_size, size=(batch_size, length, 1, 1))
     data_parallelism = expert_utils.Parallelism(
@@ -86,7 +87,7 @@ class ModalityTest(tf.test.TestCase):
     vocab_size = 11
     model_hparams = common_hparams.basic_params1()
     model_hparams.hidden_size = hidden_size
-    model_hparams.mode = tf.estimator.ModeKeys.TRAIN
+    model_hparams.mode = tf_estimator.ModeKeys.TRAIN
     body_output = np.random.randint(
         100, size=(batch_size, length, height, hidden_size))
     targets = np.random.randint(
@@ -127,7 +128,7 @@ class ModalityTest(tf.test.TestCase):
     model_hparams = common_hparams.basic_params1()
     model_hparams.factored_logits = True
     model_hparams.hidden_size = hidden_size
-    model_hparams.mode = tf.estimator.ModeKeys.TRAIN
+    model_hparams.mode = tf_estimator.ModeKeys.TRAIN
     body_output = np.random.randint(
         100, size=(batch_size, length, height, hidden_size))
     targets = np.random.randint(

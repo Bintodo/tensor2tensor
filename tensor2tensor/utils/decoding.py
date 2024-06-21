@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -33,10 +33,12 @@ from six.moves import input  # pylint: disable=redefined-builtin
 from tensor2tensor.data_generators import problem as problem_lib
 from tensor2tensor.data_generators import text_encoder
 from tensor2tensor.data_generators import text_problems
+from tensor2tensor.utils import contrib
+from tensor2tensor.utils import hparam
 from tensor2tensor.utils import mlperf_log
 from tensor2tensor.utils import registry
-from tensor2tensor.utils.hparam import HParams
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
 
 FLAGS = tf.flags.FLAGS
 
@@ -46,7 +48,7 @@ IMAGE_DECODE_LENGTH = 100
 
 def decode_hparams(overrides=""):
   """Hyperparameters for decoding."""
-  hp = HParams(
+  hp = hparam.HParams(
       save_images=False,
       log_results=True,
       extra_length=100,
@@ -65,7 +67,8 @@ def decode_hparams(overrides=""):
       identity_output=False,
       num_samples=-1,  # Number of examples to decode.
       delimiter="\n",
-      decode_to_file=None,  # str. Prefix for filename to write decodings to.
+      decode_to_file="",  # str. Prefix for filename to write decodings to.
+      decode_reference="",  # str. Filename to read references from.
       decode_in_memory=False,
       # How much decode should wait for the next checkpoint
       decode_timeout_mins=240,
@@ -95,7 +98,9 @@ def decode_hparams(overrides=""):
       # Used for MLPerf compliance logging.
       mlperf_decode_step=0.0,
       mlperf_threshold=25.0,
-      mlperf_success=False)
+      mlperf_success=False,
+      # A comma-delimited list of additional infer() outputs to be exported.
+      export_extra_infer_outputs="")
   hp.parse(overrides)
   return hp
 
@@ -110,7 +115,8 @@ def log_decode_results(inputs,
                        save_images=False,
                        output_dir=None,
                        identity_output=False,
-                       log_results=True):
+                       log_results=True,
+                       skip_eos_postprocess=False):
   """Log inference results."""
 
   # TODO(lukaszkaiser) refactor this into feature_encoder
@@ -132,7 +138,7 @@ def log_decode_results(inputs,
   is_image = "image" in problem_name
   is_text2class = isinstance(registry.problem(problem_name),
                              text_problems.Text2ClassProblem)
-  skip_eos_postprocess = is_image or is_text2class
+  skip_eos_postprocess = is_image or is_text2class or skip_eos_postprocess
 
   decoded_inputs = None
   if is_image and save_images:
@@ -199,7 +205,7 @@ def decode_from_dataset(estimator,
   # Build the inference input function
   problem = hparams.problem
   infer_input_fn = problem.make_estimator_input_fn(
-      tf.estimator.ModeKeys.PREDICT, hparams, dataset_kwargs=dataset_kwargs)
+      tf_estimator.ModeKeys.PREDICT, hparams, dataset_kwargs=dataset_kwargs)
 
   predictions, output_dirs = [], []
   for decode_id in range(decode_hp.num_decodes):
@@ -255,9 +261,9 @@ def decode_once(estimator,
     estimator: tf.estimator.Estimator instance. Used to generate encoded
       predictions.
     problem_name: str. Name of problem.
-    hparams: tf.HParams instance. HParams for model training.
+    hparams: HParams instance. HParams for model training.
     infer_input_fn: zero-arg function. Input function for estimator.
-    decode_hp: tf.HParams instance. See decode_hparams() above.
+    decode_hp: HParams instance. See decode_hparams() above.
     decode_to_file: str. Prefix for filenames. Used to generated filenames to
       which decoded predictions are written.
     output_dir: str. Output directory. Only used for writing images.
@@ -356,7 +362,8 @@ def decode_once(estimator,
           output_dir=output_dir,
           identity_output=decode_hp.identity_output,
           targets=targets,
-          log_results=log_results)
+          log_results=log_results,
+          skip_eos_postprocess=decode_hp.skip_eos_postprocess)
       decoded_outputs.append(decoded)
 
     # Write out predictions if decode_to_file passed
@@ -450,7 +457,7 @@ def decode_from_file(estimator,
           task_id=decode_hp.multiproblem_task_id, has_input=has_input)
       gen_fn = make_input_fn_from_generator(input_gen)
       example = gen_fn()
-      return _decode_input_tensor_to_features_dict(example, hparams)
+      return _decode_input_tensor_to_features_dict(example, hparams, decode_hp)
   decodes = []
   result_iter = estimator.predict(input_fn, checkpoint_path=checkpoint_path)
 
@@ -488,7 +495,8 @@ def decode_from_file(estimator,
             None,
             inputs_vocab,
             targets_vocab,
-            log_results=decode_hp.log_results)
+            log_results=decode_hp.log_results,
+            skip_eos_postprocess=decode_hp.skip_eos_postprocess)
         beam_decodes.append(decoded_outputs)
         if decode_hp.write_beam_scores:
           beam_scores.append(score)
@@ -507,7 +515,8 @@ def decode_from_file(estimator,
           None,
           inputs_vocab,
           targets_vocab,
-          log_results=decode_hp.log_results)
+          log_results=decode_hp.log_results,
+          skip_eos_postprocess=decode_hp.skip_eos_postprocess)
       decodes.append(decoded_outputs)
     total_time_per_step += elapsed_time
     total_cnt += result["outputs"].shape[-1]
@@ -596,7 +605,7 @@ def _decode_filename(base_filename, problem_name, decode_hp):
 def make_input_fn_from_generator(gen):
   """Use py_func to yield elements from the given generator."""
   first_ex = six.next(gen)
-  flattened = tf.contrib.framework.nest.flatten(first_ex)
+  flattened = contrib.framework().nest.flatten(first_ex)
   types = [t.dtype for t in flattened]
   shapes = [[None] * len(t.shape) for t in flattened]
   first_ex_list = [first_ex]
@@ -606,12 +615,12 @@ def make_input_fn_from_generator(gen):
       example = first_ex_list.pop()
     else:
       example = six.next(gen)
-    return tf.contrib.framework.nest.flatten(example)
+    return contrib.framework().nest.flatten(example)
 
   def input_fn():
     flat_example = tf.py_func(py_func, [], types)
     _ = [t.set_shape(shape) for t, shape in zip(flat_example, shapes)]
-    example = tf.contrib.framework.nest.pack_sequence_as(first_ex, flat_example)
+    example = contrib.framework().nest.pack_sequence_as(first_ex, flat_example)
     return example
 
   return input_fn
@@ -922,15 +931,23 @@ def _interactive_input_tensor_to_features_dict(feature_map, hparams):
   features["decode_length"] = (
       IMAGE_DECODE_LENGTH if input_is_image else inputs[1])
   features["inputs"] = x
+  # Save inputs to "partial_targets" when prepending inputs to targets. Also
+  # keep "inputs" as some models crash if they don't exist.
+  if getattr(hparams, "prepend_mode", "none") != "none":
+    shape = tf.shape(x)
+    partial_targets = tf.reshape(x, [shape[0], shape[1]])
+    partial_targets = tf.pad(partial_targets, [[0, 0], [0, 1]])
+    features["partial_targets"] = partial_targets
   return features
 
 
-def _decode_input_tensor_to_features_dict(feature_map, hparams):
+def _decode_input_tensor_to_features_dict(feature_map, hparams, decode_hp):
   """Convert the interactive input format (see above) to a dictionary.
 
   Args:
     feature_map: dict with inputs.
     hparams: model hyperparameters
+    decode_hp: decode hyperparameters
 
   Returns:
     a features dictionary, as expected by the decoder.
@@ -950,13 +967,21 @@ def _decode_input_tensor_to_features_dict(feature_map, hparams):
   features["input_space_id"] = input_space_id
   features["target_space_id"] = target_space_id
   features["decode_length"] = (
-      IMAGE_DECODE_LENGTH if input_is_image else tf.shape(x)[1] + 50)
+      IMAGE_DECODE_LENGTH if input_is_image else
+      tf.constant(decode_hp.extra_length))
   features["inputs"] = x
+  # Save inputs to "partial_targets" when prepending inputs to targets. Also
+  # keep "inputs" as some models crash if they don't exist.
+  if getattr(hparams, "prepend_mode", "none") != "none":
+    shape = tf.shape(x)
+    partial_targets = tf.reshape(x, [shape[0], shape[1]])
+    partial_targets = tf.pad(partial_targets, [[0, 0], [0, 1]])
+    features["partial_targets"] = partial_targets
   return features
 
 
 def get_step_from_ckpt_path(path):
-  return int(os.path.basename(path).split("-")[1])
+  return int(os.path.basename(path).split("-")[-1])
 
 
 def latest_checkpoint_step(ckpt_dir):

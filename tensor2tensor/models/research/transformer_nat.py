@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Tensor2Tensor Authors.
+# Copyright 2023 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,7 +24,8 @@ from tensor2tensor.models import transformer
 from tensor2tensor.utils import beam_search
 from tensor2tensor.utils import registry
 from tensor2tensor.utils import t2t_model
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+from tensorflow.compat.v1 import estimator as tf_estimator
 from tensorflow.python.training import moving_averages  # pylint: disable=g-direct-tensorflow-import
 
 
@@ -94,10 +95,8 @@ def vq_discrete_bottleneck(x, hparams):
   updated_ema_count = (
       (updated_ema_count + hparams.epsilon) /
       (n + bottleneck_size * hparams.epsilon) * n)
-  # pylint: disable=g-no-augmented-assignment
   updated_ema_means = updated_ema_means / tf.expand_dims(
       updated_ema_count, axis=-1)
-  # pylint: enable=g-no-augmented-assignment
   with tf.control_dependencies([e_loss]):
     update_means = tf.assign(means, updated_ema_means)
     with tf.control_dependencies([update_means]):
@@ -257,7 +256,7 @@ def ae_transformer_internal(inputs, targets, target_space, hparams, cache=None):
       max_targets_len_from_inputs,
       final_length_divisible_by=2**hparams.num_compress_steps)
   targets_c = compress(targets, hparams, "compress")
-  if hparams.mode != tf.estimator.ModeKeys.PREDICT:
+  if hparams.mode != tf_estimator.ModeKeys.PREDICT:
     # Compress and bottleneck.
     latents_discrete_hot, extra_loss = vq_discrete_bottleneck(
         x=targets_c, hparams=hparams)
@@ -300,7 +299,7 @@ def ae_transformer_internal(inputs, targets, target_space, hparams, cache=None):
   masking *= common_layers.inverse_exp_decay(
       hparams.mask_startup_steps // 4)  # Not much at start.
   masking = tf.minimum(tf.maximum(masking, 0.0), 1.0)
-  if hparams.mode == tf.estimator.ModeKeys.PREDICT:
+  if hparams.mode == tf_estimator.ModeKeys.PREDICT:
     masking = 1.0
   mask = tf.less(masking,
                  tf.random_uniform(common_layers.shape_list(targets)[:-1]))
